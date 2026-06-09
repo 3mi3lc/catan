@@ -1,11 +1,12 @@
 import {
-  legalActions, COSTS, tradeRatio,
-  type GameState, type Action, type PlayerId, type Resource, type EdgeId, type VertexId,
+  legalActions,
+  type GameState, type Action, type PlayerId, type Resource
 } from '@catan/core';
 import type { Policy } from './policy';
 import { ofType } from './policy';
 import {
-  type Weights, DEFAULT_WEIGHTS, vertexScore, vertexProduction, argmax, robberScore, discardAction,
+  type Weights, DEFAULT_WEIGHTS, vertexScore, vertexProduction, argmax,
+  robberScore, discardAction, roadExpansionValue, bestYopTake,
 } from './heuristics';
 
 const STRONG_ROBBER = 3;
@@ -18,7 +19,7 @@ function decide(state: GameState, player: PlayerId, w: Weights): Action {
   const acts = legalActions(state, player);
   switch (state.phase) {
     case 'setupSettlement': {
-      const best = argmax(ofType(acts, 'buildSettlement'), (a) => vertexScore(state, a.vertex, w));
+      const best = argmax(ofType(acts, 'buildSettlement'), (a) => vertexScore(state, a.vertex, w, player));
       return best ?? acts[0];
     }
     case 'setupRoad': {
@@ -26,7 +27,7 @@ function decide(state: GameState, player: PlayerId, w: Weights): Action {
       const best = argmax(ofType(acts, 'buildRoad'), (a) => {
         const [x, y] = state.board.edges[a.edge].vertices;
         const far = x === last ? y : x;
-        return vertexScore(state, far, w);
+        return vertexScore(state, far, w, player);
       });
       return best ?? acts[0];
     }
@@ -71,67 +72,42 @@ function mainDecision(state: GameState, player: PlayerId, w: Weights, acts: Acti
 
   // 3. Settlement — +1 VP and a new income source.
   const setts = ofType(acts, 'buildSettlement');
-  if (setts.length) return argmax(setts, (a) => vertexScore(state, a.vertex, w))!;
+  if (setts.length) return argmax(setts, (a) => vertexScore(state, a.vertex, w, player))!;
 
   const ownsSettlement = Object.values(state.buildings).some(
       (b) => b.owner === player && b.kind === 'settlement',
   );
-  const cityShort = ownsSettlement && state.players[player].supply.cities > 0;
-  const settlementAvailable = state.players[player].supply.settlements > 0;
+  const cityShort        = ownsSettlement && state.players[player].supply.cities > 0;
+  const settlementAvail  = state.players[player].supply.settlements > 0;
 
-  // 4. Year of Plenty — complete a city or settlement this turn.
+  const cityGap  = Math.max(0, 2 - R.grain) + Math.max(0, 3 - R.ore);
+  const settGap  = ([R.brick, R.lumber, R.wool, R.grain] as number[]).filter(x => x < 1).length;
+  const buildGoal: 'city' | 'sett' | null =
+      cityShort && settlementAvail ? (cityGap <= settGap ? 'city' : 'sett') :
+          cityShort                   ? 'city' :
+              settlementAvail             ? 'sett' :
+                  null;
+
+  // 4. Year of Plenty — toward nearest build goal.
   const yop = ofType(acts, 'playYearOfPlenty');
   if (yop.length) {
-    if (cityShort) {
-      const need: Resource[] = [];
-      for (let i = R.grain; i < 2; i++) need.push('grain');
-      for (let i = R.ore; i < 3; i++) need.push('ore');
-      if (
-          need.length >= 1 &&
-          need.length <= 2 &&
-          need.every((r) => state.bank[r] >= need.filter((x) => x === r).length)
-      ) {
-        while (need.length < 2) need.push('ore');
-        return { type: 'playYearOfPlenty', take: [need[0], need[1]] };
-      }
-    }
-    if (settlementAvailable) {
-      const missing = missingForSettlement(R);
-      if (missing.length >= 1 && missing.length <= 2) {
-        const take: [Resource, Resource] = [missing[0], missing[1] ?? missing[0]];
-        if (take.every((r) => state.bank[r] > 0)) {
-          return { type: 'playYearOfPlenty', take };
-        }
-      }
-    }
+    const take = bestYopTake(state, player);
+    if (take) return { type: 'playYearOfPlenty', take };
   }
 
-  // 5. Bank trade to complete a city (one resource short).
+  // 5. Bank trade to complete a city (exactly 1 short).
   if (cityShort) {
     const trade = tradeForCity(state, player, ofType(acts, 'bankTrade'));
     if (trade) return trade;
   }
 
-  // 6. Bank trade to complete a settlement (one resource short).
-  if (settlementAvailable) {
+  // 6. Bank trade to complete a settlement (exactly 1 short).
+  if (settlementAvail) {
     const trade = tradeForSettlement(state, player, ofType(acts, 'bankTrade'));
     if (trade) return trade;
   }
 
-  // 7. Hand pressure — trade surplus before it accumulates and attracts the robber.
-  //    Bias away from brick/lumber when already road-rich.
-  if (hand >= 6) {
-    const flush = ofType(acts, 'bankTrade');
-    const roadRich = (15 - state.players[player].supply.roads) >= 8;
-    const best = argmax(flush, (t) => {
-      const base = R[t.give] * (1 / w.resource[t.give]);
-      const penalty = roadRich && (t.give === 'brick' || t.give === 'lumber') ? 0.5 : 1;
-      return base * penalty;
-    });
-    if (best) return best;
-  }
-
-  // 8. Monopoly — grab a resource pile worth taking.
+  // 7. Monopoly — grab a pile worth taking.
   const monos = ofType(acts, 'playMonopoly');
   if (monos.length) {
     const totals = Object.fromEntries(
@@ -146,63 +122,94 @@ function mainDecision(state: GameState, player: PlayerId, w: Weights, acts: Acti
     if (totals[best.resource] >= 2) return best;
   }
 
-  // 9. Buy a development card whenever affordable — clears hand, builds toward
-  //    largest army, and may draw a VP card.
+  // 8. Hand pressure — fire before the discard threshold (≥8).
+  //    Only trade toward a concrete build goal to avoid cycling.
+  if (hand >= 8) {
+    const trades = ofType(acts, 'bankTrade');
+
+    // a) Drain toward city — also fires when 2-short (not just 1-short as in rung 5)
+    if (cityShort && cityGap <= 2) {
+      const target: Resource = Math.max(0, 2 - R.grain) > 0 ? 'grain' : 'ore';
+      const keep: Record<Resource, number> = { grain: 2, ore: 3, brick: 0, lumber: 0, wool: 0 };
+      const t = argmax(
+          trades.filter(tr => tr.receive === target && R[tr.give] - tr.giveCount >= keep[tr.give]),
+          tr => R[tr.give],
+      );
+      if (t) return t;
+    }
+
+    // b) Drain toward settlement — also fires when 2-short
+    if (settlementAvail && settGap <= 2) {
+      const missing = (['brick', 'lumber', 'wool', 'grain'] as Resource[]).find(r => R[r] < 1);
+      if (missing) {
+        const keep: Record<Resource, number> = { brick: 1, lumber: 1, wool: 1, grain: 1, ore: 0 };
+        const t = argmax(
+            trades.filter(tr => tr.receive === missing && R[tr.give] - tr.giveCount >= keep[tr.give]),
+            tr => R[tr.give],
+        );
+        if (t) return t;
+      }
+    }
+
+    // c) No goal reachable within 2 trades — dump the most-abundant
+    //    low-priority resource. Protect city inputs when saving for one.
+    const giveOrder: Resource[] = ['wool', 'lumber', 'brick', 'grain', 'ore'];
+    const dump = giveOrder
+        .flatMap(give => trades.filter(tr => tr.give === give && R[give] >= 4))
+        .find(tr => !(cityShort && (tr.give === 'grain' || tr.give === 'ore')));
+    if (dump) return dump;
+  }
+
+  // 9. Buy a development card whenever affordable — clears hand, builds
+  //    toward largest army, may draw a VP card.
   if (ofType(acts, 'buyDevCard').length) return { type: 'buyDevCard' };
 
   // 10. Expansion road toward the best reachable new settlement spot.
   const roads = ofType(acts, 'buildRoad');
   if (roads.length) {
-    if (settlementAvailable) {
-      const best = argmax(roads, (a) => roadExpansionValue(state, a.edge, w));
-      if (best && roadExpansionValue(state, best.edge, w) > 0) return best;
+    if (settlementAvail) {
+      const best = argmax(roads, (a) => roadExpansionValue(state, player, a.edge, w));
+      if (best && roadExpansionValue(state, player, best.edge, w) > 0) return best;
     }
 
     // Chase longest road if within striking distance.
-    const lrHolder = state.longestRoad?.player;
-    const ourRoads = 15 - state.players[player].supply.roads;
+    const lrHolder    = state.longestRoad?.player;
     const lrThreshold = lrHolder ? 15 - state.players[lrHolder].supply.roads : 4;
+    const ourRoads    = 15 - state.players[player].supply.roads;
     if (lrHolder !== player && ourRoads >= lrThreshold - 2) {
-      const best = argmax(roads, (a) => roadExpansionValue(state, a.edge, w) + 0.1);
+      const best = argmax(roads, (a) => roadExpansionValue(state, player, a.edge, w) + 0.1);
       if (best) return best;
     }
   }
 
-  // 11. End turn.
+  // 11. Road Building — enumerate the two best edges from the legal pairs
+  //    and play the card when it's worth it.
+  const roadBuildingActs = ofType(acts, 'playRoadBuilding');
+  if (roadBuildingActs.length) {
+    const lrHolder    = state.longestRoad?.player;
+    const lrThreshold = lrHolder ? 15 - state.players[lrHolder].supply.roads : 4;
+    const ourRoads    = 15 - state.players[player].supply.roads;
+    const chasingLR   = lrHolder !== player && ourRoads >= lrThreshold - 3;
+    const best = argmax(roadBuildingActs, (a) =>
+        roadExpansionValue(state, player, a.edges[0], w) +
+        roadExpansionValue(state, player, a.edges[1], w) +
+        (chasingLR ? 0.2 : 0),
+    );
+    const score = best
+        ? roadExpansionValue(state, player, best.edges[0], w) +
+        roadExpansionValue(state, player, best.edges[1], w)
+        : 0;
+
+    if (best && (chasingLR || score > 0)) return best;
+  }
+
+
+  // 12. End turn.
   return { type: 'endTurn' };
 }
 
-// Resources still needed to build a settlement (brick + lumber + wool + grain).
-function missingForSettlement(R: Record<Resource, number>): Resource[] {
-  const missing: Resource[] = [];
-  if (R.brick < 1)  missing.push('brick');
-  if (R.lumber < 1) missing.push('lumber');
-  if (R.wool < 1)   missing.push('wool');
-  if (R.grain < 1)  missing.push('grain');
-  return missing;
-}
-
-// Trade for a settlement when exactly one resource short, without spending
-// resources already allocated toward it.
-function tradeForSettlement(
-    state: GameState,
-    player: PlayerId,
-    trades: Extract<Action, { type: 'bankTrade' }>[],
-): Action | null {
-  const R = state.players[player].resources;
-  const missing = missingForSettlement(R);
-  if (missing.length !== 1) return null;
-  const need = missing[0];
-  // Don't give away anything the settlement itself needs.
-  const protected_: Resource[] = ['brick', 'lumber', 'wool', 'grain'];
-  const candidates = trades.filter(
-      (t) => t.receive === need && !protected_.includes(t.give),
-  );
-  return argmax(candidates, (t) => R[t.give]) ?? null;
-}
-
-// Trade for a city when exactly one resource short, without spending what the
-// city needs.
+// Trade to complete a city — only fires when exactly 1 resource short.
+// giveCount already reflects port ratios so port trades are handled automatically.
 function tradeForCity(
     state: GameState,
     player: PlayerId,
@@ -210,27 +217,50 @@ function tradeForCity(
 ): Action | null {
   const R = state.players[player].resources;
   const needGrain = Math.max(0, 2 - R.grain);
-  const needOre = Math.max(0, 3 - R.ore);
+  const needOre   = Math.max(0, 3 - R.ore);
   if (needGrain + needOre !== 1) return null;
+
   const missing: Resource = needGrain > 0 ? 'grain' : 'ore';
+
+  const keep: Record<Resource, number> = {
+    grain: 2, ore: 3, brick: 0, lumber: 0, wool: 0,
+  };
+
   const candidates = trades.filter(
-      (t) => t.receive === missing && t.give !== 'grain' && t.give !== 'ore',
+      (t) => t.receive === missing && R[t.give] - t.giveCount >= keep[t.give],
   );
+
   return argmax(candidates, (t) => R[t.give]) ?? null;
 }
 
-function roadExpansionValue(state: GameState, edge: EdgeId, w: Weights): number {
-  let best = 0;
-  for (const v of state.board.edges[edge].vertices as VertexId[]) {
-    if (state.buildings[v]) continue;
-    const blocked = state.board.vertices[v].edges.some((e) => {
-      const [a, b] = state.board.edges[e].vertices;
-      const nb = a === v ? b : a;
-      return !!state.buildings[nb];
-    });
-    if (!blocked) best = Math.max(best, vertexScore(state, v, w));
-  }
-  return best;
+// Trade to complete a settlement — only fires when exactly 1 resource short.
+function tradeForSettlement(
+    state: GameState,
+    player: PlayerId,
+    trades: Extract<Action, { type: 'bankTrade' }>[],
+): Action | null {
+  const R = state.players[player].resources;
+  const needBrick  = Math.max(0, 1 - R.brick);
+  const needLumber = Math.max(0, 1 - R.lumber);
+  const needWool   = Math.max(0, 1 - R.wool);
+  const needGrain  = Math.max(0, 1 - R.grain);
+
+  if (needBrick + needLumber + needWool + needGrain !== 1) return null;
+
+  const missing: Resource =
+      needBrick  > 0 ? 'brick'  :
+          needLumber > 0 ? 'lumber' :
+              needWool   > 0 ? 'wool'   : 'grain';
+
+  const keep: Record<Resource, number> = {
+    brick: 1, lumber: 1, wool: 1, grain: 1, ore: 0,
+  };
+
+  const candidates = trades.filter(
+      (t) => t.receive === missing && R[t.give] - t.giveCount >= keep[t.give],
+  );
+
+  return argmax(candidates, (t) => R[t.give]) ?? null;
 }
 
 function gainsLargestArmy(state: GameState, player: PlayerId): boolean {

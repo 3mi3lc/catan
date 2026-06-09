@@ -1,0 +1,239 @@
+:root {
+    --ivory:  #f7f2e7;
+    --paper:  #fffdf8;
+    --ink:    #2c2620;
+    --muted:  #8a8175;
+    --line:   #e6ddca;
+    --accent: #b23a2e;
+}
+* { box-sizing: border-box; }
+
+/* ── Viewport lock ────────────────────────────────────────────────────────
+   html/body never scroll. The page is exactly one screen tall.
+   Only .movelog scrolls internally.
+   ──────────────────────────────────────────────────────────────────────── */
+html, body {
+    height: 100%;
+    overflow: hidden;
+    margin: 0;
+    background: var(--ivory);
+    color: var(--ink);
+    font-family: 'Spline Sans', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3 { font-family: 'Fraunces', Georgia, serif; }
+
+.page {
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* ── Header (fixed height) ───────────────────────────────────────────── */
+.topbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding: 9px 20px;
+    border-bottom: 1px solid var(--line);
+    background: var(--ivory);
+}
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand h1 { margin: 0; font-size: 22px; line-height: 1; }
+.logo { font-size: 26px; }
+.tagline { font-size: 11px; color: var(--muted); margin-top: 1px; }
+.topbar input[type="file"] { font-size: 12px; }
+
+.legend { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 12.5px; font-weight: 500; }
+.legend .sw {
+    display: inline-block; width: 11px; height: 11px;
+    border-radius: 3px; border: 1px solid #0003;
+    margin-right: 5px; vertical-align: -1px;
+}
+
+.error-banner {
+    flex: none;
+    background: #fbe9e6; border-bottom: 1px solid #e3b4ad; color: #8a2d22;
+    padding: 7px 20px; font-size: 13px;
+}
+
+/* ── Empty state ─────────────────────────────────────────────────────── */
+.empty {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 8px; text-align: center; padding: 40px;
+}
+.muted { color: var(--muted); }
+code { font-family: ui-monospace, monospace; background: #00000008; padding: 1px 5px; border-radius: 4px; }
+
+/* ── Two-column grid ──────────────────────────────────────────────────
+   Fixed column widths so the board SVG stays at a predictable size
+   (aspect-ratio ~1.15:1, so 400px wide → ~345px tall — fits any laptop).
+   justify-content: center centres the pair on ultra-wide screens.
+   ──────────────────────────────────────────────────────────────────── */
+.replay-layout {
+    flex: 1;
+    min-height: 0;                       /* let flex child shrink */
+    display: grid;
+    grid-template-columns: 400px 380px;  /* fixed widths */
+    justify-content: center;
+    gap: 16px;
+    padding: 12px 20px;
+    overflow: hidden;                    /* layout itself never scrolls */
+    align-items: stretch;
+}
+
+/* ── Board column — never scrolls ───────────────────────────────────── */
+.board-col {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow: hidden;
+    min-height: 0;
+}
+
+/* ── Info column — never scrolls; only the log inside it does ───────── */
+.info-col {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow: hidden;
+    min-height: 0;
+}
+
+/* ── Cards ───────────────────────────────────────────────────────────── */
+.card {
+    flex: none;                          /* don't grow by default */
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 13px;
+    padding: 12px 14px;
+    box-shadow: 0 1px 3px #0000000e;
+}
+.card h3 { margin: 0 0 9px; font-size: 13px; font-weight: 600; letter-spacing: .01em; }
+.card h3 .muted { font-weight: 400; font-size: 12px; }
+
+/* The log card expands to fill all leftover height in the info column */
+.log-card {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* ── The ONE scrollable element ─────────────────────────────────────── */
+.movelog {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    margin: 0 -6px;
+    padding: 0 2px;
+}
+
+/* ── Board ───────────────────────────────────────────────────────────── */
+.board-card { padding: 9px; }
+.board-svg  { width: 100%; height: auto; display: block; border-radius: 11px; }
+
+/* ── Transport ───────────────────────────────────────────────────────── */
+.transport { display: flex; gap: 6px; }
+.transport button {
+    flex: none; border: 1px solid var(--line); background: #fff; color: var(--ink);
+    border-radius: 7px; padding: 5px 9px; font-size: 13px; cursor: pointer; transition: background .1s;
+}
+.transport button:hover:not(:disabled) { background: #f0e9d8; }
+.transport button:disabled { opacity: .38; cursor: default; }
+.transport button.play { flex: 1; font-weight: 600; }
+.scrub { width: 100%; margin-top: 9px; accent-color: var(--accent); }
+.speed-row { display: flex; align-items: center; gap: 8px; margin-top: 7px; font-size: 12px; }
+.speed-row input { flex: 1; accent-color: var(--accent); }
+
+/* ── Now card ────────────────────────────────────────────────────────── */
+.now-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 12.5px; margin-bottom: 6px; }
+.phase-badge {
+    background: var(--ink); color: var(--paper);
+    border-radius: 5px; padding: 2px 7px; font-size: 10px; font-weight: 600; letter-spacing: .04em;
+}
+.dice { margin-left: auto; font-weight: 600; }
+.now-action { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; line-height: 1.4; }
+.now-meta   { font-size: 11px; margin-top: 6px; }
+.winner-banner {
+    margin-top: 8px; background: #f6efd7; border: 1px solid #e3d29a;
+    border-radius: 7px; padding: 6px 10px; font-weight: 600; font-size: 13.5px;
+}
+
+/* ── Players card ────────────────────────────────────────────────────── */
+.dot   { width: 10px; height: 10px; border-radius: 50%; border: 1px solid #0003; flex: none; display: inline-block; }
+.pname { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; }
+.pname.inline { display: inline-flex; }
+.cur-arrow { color: var(--accent); font-size: 11px; }
+.vp    { margin-left: auto; font-family: 'Fraunces', serif; font-weight: 700; font-size: 18px; }
+.badges { display: flex; gap: 4px; }
+.badge { font-size: 9.5px; padding: 1px 5px; border-radius: 5px; background: #00000008; border: 1px solid var(--line); }
+.badge.win { background: #f6efd7; border-color: #e3d29a; }
+
+.player-row { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.player-row:last-child { border-bottom: none; }
+.player-row.current {
+    background: linear-gradient(90deg, #b23a2e0d, transparent);
+    margin: 0 -14px; padding: 8px 14px;
+}
+
+.res-chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+.chip {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-size: 10.5px; font-weight: 500; padding: 1px 6px;
+    border-radius: 999px; border: 1px solid;
+}
+.chip.zero { opacity: .32; }
+.cdot { width: 7px; height: 7px; border-radius: 50%; border: 1px solid #0002; }
+
+.sub { font-size: 10.5px; color: var(--ink); margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; }
+.sub.dev { gap: 5px; }
+.dev-chip { background: #00000006; border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-size: 10px; }
+
+/* ── Action log rows ─────────────────────────────────────────────────── */
+.move {
+    display: flex; align-items: baseline; flex-wrap: wrap;
+    gap: 7px; width: 100%; text-align: left;
+    padding: 4px 6px; border: none; background: none;
+    border-radius: 6px; cursor: pointer;
+    font-size: 11.5px; color: var(--ink); font-family: inherit; line-height: 1.5;
+}
+.move:hover  { background: #0000000a; }
+.move.active { background: #2c26201a; outline: 1px solid var(--line); }
+.move.newturn { margin-top: 3px; border-top: 1px dashed var(--line); padding-top: 6px; }
+
+.move .idx  { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 26px; text-align: right; flex: none; }
+.move .pdot { width: 8px; height: 8px; border-radius: 50%; flex: none; border: 1px solid #0003; align-self: center; }
+.move .ptag { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; min-width: 80px; flex: none; }
+.move .desc { flex: 1; }
+.move .loc  { font-family: ui-monospace, monospace; font-size: 9.5px; color: var(--muted); flex: none; }
+
+/* Resource gains on dice-roll rows */
+.dice-gains { display: inline-flex; gap: 6px; flex-wrap: wrap; margin-left: 5px; vertical-align: middle; }
+.gain-entry { display: inline-flex; align-items: center; gap: 3px; }
+.tiny-dot   { width: 6px; height: 6px; border-radius: 50%; flex: none; border: 1px solid #0003; }
+.gain-chip  {
+    display: inline-flex; font-size: 9.5px; font-weight: 500;
+    padding: 0 4px; border-radius: 999px; border: 1px solid; line-height: 14px;
+}
+
+/* ── Responsive: restore scroll on narrow/tall screens ───────────────── */
+@media (max-width: 860px) {
+    html, body { overflow: auto; height: auto; }
+    .page { height: auto; overflow: visible; }
+    .replay-layout {
+        grid-template-columns: 1fr;
+        overflow: visible; height: auto;
+        padding-bottom: 40px;
+    }
+    .board-col, .info-col { overflow: visible; height: auto; }
+    .log-card { height: auto; }
+    .movelog  { max-height: 60vh; }
+}

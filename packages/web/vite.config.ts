@@ -6,7 +6,7 @@ export default defineConfig({
   optimizeDeps: { exclude: ['@catan/core'] },
   build: {
     rollupOptions: {
-      input: { viewer: 'index.html', game: 'game.html' },
+      input: { viewer: 'index.html', game: 'game.html', replay: 'replay.html' },
     },
   },
 });
