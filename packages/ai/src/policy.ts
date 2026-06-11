@@ -7,7 +7,16 @@ import type { GameState, Action, PlayerId } from '@catan/core';
 // which `legalActions` does not enumerate (the policy synthesises a discard).
 export interface Policy {
   readonly name: string;
-  decide(state: GameState, player: PlayerId): Action;
+  decide(state: GameState, player: PlayerId): Action ;
+}
+
+// A policy whose decision may be asynchronous (e.g. ONNX inference, a remote
+// bot). onnxruntime-node only exposes the async `run()`, so net-backed policies
+// cannot satisfy the sync Policy interface. Every sync Policy is assignable to
+// AsyncPolicy, so mixed seats work with `playMatchAsync`.
+export interface AsyncPolicy {
+  readonly name: string;
+  decide(state: GameState, player: PlayerId): Action | Promise<Action>;
 }
 
 // Narrow a legal-action list to a single action variant, with types intact.

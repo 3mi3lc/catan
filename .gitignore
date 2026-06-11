@@ -1,2 +1,14 @@
 node_modules/
 .idea
+.venv/source .venv/bin/activate
+models/
+replays/
+data/
+
+packages/training/__pycache__/
+**/__pycache__/
+*.pyc
+
+packages/ai/scripts/*.mjs
+
+packages/training/topology.json

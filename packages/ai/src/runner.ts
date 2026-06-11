@@ -1,8 +1,8 @@
 import {
   generateBoard, initialGameState, applyMove, rngStep,
-  type GameState, type PlayerId, type PlayerColor,
+  type GameState, type Action, type PlayerId, type PlayerColor,
 } from '@catan/core';
-import type { Policy } from './policy';
+import type { Policy, AsyncPolicy } from './policy';
 
 const COLORS: PlayerColor[] = ['red', 'blue', 'white', 'orange'];
 
@@ -10,6 +10,12 @@ const rngFromSeed = (seed: number) => {
   let s = seed >>> 0;
   return () => { const r = rngStep(s); s = r.next; return r.value; };
 };
+
+// Replay-archive types (used by benchmark.ts and the replay viewer) live in
+// replay.ts; re-exported here for convenience.
+export type { MoveRecord, GameArchive } from './replay';
+
+// ── Match / tournament types ──────────────────────────────────────────────────
 
 export interface MatchOptions {
   seed: number;
@@ -40,9 +46,55 @@ export function playMatch({ seed, policies, maxSteps = 5000, onStep }: MatchOpti
   for (; steps < maxSteps && !state.winner; steps++) {
     // In the discard phase any over-the-limit player acts (not the current one).
     const actor = state.phase === 'discard'
-      ? (Object.keys(state.pendingDiscards)[0] as PlayerId)
-      : state.currentPlayer;
+        ? (Object.keys(state.pendingDiscards)[0] as PlayerId)
+        : state.currentPlayer;
     const action = policies[seatOf(actor)].decide(state, actor);
+    if (action.type === 'endTurn') turns++;
+    const res = applyMove(state, { player: actor, action });
+    if (!res.ok) {
+      throw new Error(`${policies[seatOf(actor)].name} proposed an illegal move (${res.error}): ${JSON.stringify(action)}`);
+    }
+    state = res.state;
+    onStep?.(state);
+  }
+
+  return {
+    winner: state.winner,
+    winnerSeat: state.winner ? seatOf(state.winner) : null,
+    turns,
+    steps,
+    finalState: state,
+  };
+}
+
+// ── Async variant ─────────────────────────────────────────────────────────────
+
+export interface AsyncMatchOptions {
+  seed: number;
+  policies: AsyncPolicy[]; // sync policies are assignable; mixed seats are fine
+  maxSteps?: number;
+  onStep?: (state: GameState) => void;
+}
+
+// Same game loop as playMatch, but awaits each decision. Needed for policies
+// backed by onnxruntime-node, whose inference API is Promise-only. Determinism
+// is unchanged: the engine RNG is seeded and decisions are awaited in order.
+export async function playMatchAsync(
+    { seed, policies, maxSteps = 5000, onStep }: AsyncMatchOptions,
+): Promise<MatchResult> {
+  const n = policies.length;
+  const board = generateBoard(rngFromSeed(seed));
+  const seats = COLORS.slice(0, n).map((c, i) => ({ id: `p${i}`, name: c, color: c }));
+  let state = initialGameState(board, seats, seed);
+  const seatOf = (p: PlayerId) => state.turnOrder.indexOf(p);
+
+  let steps = 0;
+  let turns = 0;
+  for (; steps < maxSteps && !state.winner; steps++) {
+    const actor = state.phase === 'discard'
+        ? (Object.keys(state.pendingDiscards)[0] as PlayerId)
+        : state.currentPlayer;
+    const action = await policies[seatOf(actor)].decide(state, actor);
     if (action.type === 'endTurn') turns++;
     const res = applyMove(state, { player: actor, action });
     if (!res.ok) {
@@ -72,7 +124,7 @@ export interface TournamentResult {
 // occupies every seat equally — this cancels out first-player advantage, making
 // `winsByName` a fair head-to-head comparison.
 export function playTournament(
-  policies: Policy[], games: number, baseSeed = 1, maxSteps = 5000,
+    policies: Policy[], games: number, baseSeed = 1, maxSteps = 5000,
 ): TournamentResult {
   const n = policies.length;
   const winsByName: Record<string, number> = {};

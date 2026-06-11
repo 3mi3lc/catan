@@ -11,10 +11,13 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "bench": "tsx scripts/benchmark.ts"
+    "bench": "tsx scripts/benchmark.ts",
+    "collect": "tsx scripts/collect.ts",
+    "eval": "tsx scripts/eval.ts"
   },
   "dependencies": {
-    "@catan/core": "workspace:*"
+    "@catan/core": "workspace:*",
+    "onnxruntime-node": "1.26.0"
   },
   "devDependencies": {
     "@types/node": "^25.9.2",

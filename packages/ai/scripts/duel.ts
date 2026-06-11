@@ -22,7 +22,7 @@ for (let g = 0; g < games; g++) {
     const saveReplay = g < replayCount;
     const history: GameState[] = [];
 
-    const r = playMatch({
+    const r = await playMatch({
         seed: 7000 + g, policies, maxSteps: 6000,
         onStep: saveReplay ? (state) => history.push(state) : undefined,
     });

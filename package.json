@@ -10,5 +10,8 @@
   },
   "devDependencies": {
     "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "onnxruntime-node": "^1.26.0"
   }
 }

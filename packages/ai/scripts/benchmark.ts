@@ -1,7 +1,15 @@
+/// <reference types="node" />
+/**
+ * benchmark.ts — search vs greedy head-to-head with replay archive output.
+ *
+ * Usage:
+ *   pnpm --filter @catan/ai bench [games] [rollouts] [rolloutCap] [replayCount]
+ *   pnpm --filter @catan/ai bench 32 124 1200 16
+ */
+
 import { writeFileSync, mkdirSync } from 'fs';
 import { playMatch, greedyPolicy, searchPolicy } from '../src';
-import type { Policy } from '../src';
-import type { GameArchive, MoveRecord } from '../src';
+import type { Policy, GameArchive, MoveRecord } from '../src';
 
 const games       = Number(process.argv[2] ?? 16);
 const K           = Number(process.argv[3] ?? 10);
@@ -35,6 +43,7 @@ for (let g = 0; g < games; g++) {
         ? base.map(p => intercepting(p, moves))
         : base;
 
+    // playMatch is synchronous.
     const r = playMatch({ seed: 7000 + g, policies, maxSteps: 6000 });
 
     totalTurns += r.turns;
