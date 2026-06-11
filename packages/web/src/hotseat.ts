@@ -67,6 +67,16 @@ let victimChoice: { tile: TileId; via: 'seven' | 'knight'; victims: PlayerId[] }
 let tradeGive: Resource | null = null;
 let discardSel: Record<string, Partial<Record<Resource, number>>> = {};
 let log: string[] = [];
+let moveCount = 0;   // successful engine moves this game
+let turnCount = 1;   // 1-based turn number (increments on endTurn)
+
+// AI opponent (seat p1, 2-player games only). Loaded lazily so the WASM
+// runtime + model only download when an AI mode is selected.
+import type { Bot, BotLevel } from './bot';
+let botLevel: BotLevel | 'human' = 'human';
+let bot: Bot | null = null;
+let botBusy = false;
+const BOT_SEAT: PlayerId = 'p1' as PlayerId;
 
 // Click callbacks for board targets, rebuilt each render.
 let vClicks = new Map<VertexId, () => void>();
@@ -85,8 +95,10 @@ function act(move: Move): void {
     const res = applyMove(game, move);
     if (!res.ok) { toast(res.error); return; }
     game = res.state;
+    moveCount++;
+    if (move.action.type === 'endTurn') turnCount++;
     for (const ev of res.events) log.unshift(describe(ev));
-    if (game.winner) log.unshift(`${nameOf(game.winner)} wins!`);
+    if (game.winner) log.unshift(`${nameOf(game.winner)} wins in ${turnCount} turns (${moveCount} moves)!`);
     log = log.slice(0, 40);
     mode = { kind: 'normal' };
     victimChoice = null;
@@ -356,12 +368,16 @@ function renderActions(): string {
     if (game.phase === 'main') {
         buttons.push('<span class="hint">Build by clicking highlighted spots.</span>');
         if (has('buyDevCard')) buttons.push('<button data-buydev>Buy dev card</button>');
+    }
+    // Dev cards are playable in BOTH the roll and main phases (official rule:
+    // e.g. a knight before rolling). legalActions already enumerates them.
+    if (game.phase === 'main' || game.phase === 'roll') {
         if (has('playKnight')) buttons.push('<button data-knight>Play Knight</button>');
         if (has('playRoadBuilding')) buttons.push('<button data-roadbuild>Road Building</button>');
         if (has('playYearOfPlenty')) buttons.push('<button data-yopstart>Year of Plenty</button>');
         if (has('playMonopoly')) buttons.push('<button data-monopolystart>Monopoly</button>');
-        if (has('endTurn')) buttons.push('<button data-endturn>End turn</button>');
     }
+    if (game.phase === 'main' && has('endTurn')) buttons.push('<button data-endturn>End turn</button>');
 
     return `${turn} — ${phaseLabel()}</div><div class="row">${buttons.join('')}</div>${game.phase === 'main' ? renderTrade() : ''}`;
 }
@@ -417,7 +433,17 @@ function render(): void {
     document.getElementById('players')!.innerHTML = renderPlayers();
     document.getElementById('actions')!.innerHTML = renderActions();
     document.getElementById('log')!.innerHTML = log.map((l) => `<li>${l}</li>`).join('');
+    const stats = document.getElementById('logstats');
+    if (stats) stats.textContent = `turn ${turnCount} · ${moveCount} moves`;
+
+    // When it's the AI's turn (outside the discard phase, where the human may
+    // also owe cards), replace the action panel so the human can't act for it.
+    if (botTurnPending() && game.phase !== 'discard') {
+        document.getElementById('actions')!.innerHTML =
+            `<div class="hint">🤖 ${nameOf(BOT_SEAT)} is thinking${botLevel === 'mcts' ? ' (searching)…' : '…'}</div>`;
+    }
     wire();
+    maybeBotMove();
 }
 
 let toastTimer: number | undefined;
@@ -498,15 +524,44 @@ function wire(): void {
 }
 
 // ---------------------------------------------------------------------------
+// AI opponent turn loop
+// ---------------------------------------------------------------------------
+function botTurnPending(): boolean {
+    if (botLevel === 'human' || !bot || game.winner) return false;
+    if (game.phase === 'discard') {
+        return BOT_SEAT in game.pendingDiscards;
+    }
+    return game.currentPlayer === BOT_SEAT;
+}
+
+function maybeBotMove(): void {
+    if (!botTurnPending() || botBusy) return;
+    botBusy = true;
+    // Small delay so the human can follow the log between bot moves.
+    setTimeout(async () => {
+        try {
+            const action = await bot!.decide(game, BOT_SEAT, botLevel as BotLevel);
+            botBusy = false;
+            act({ player: BOT_SEAT, action });   // render() → maybeBotMove() chains
+        } catch (err) {
+            botBusy = false;
+            toast(`AI error: ${err instanceof Error ? err.message : err}`);
+        }
+    }, 220);
+}
+
+// ---------------------------------------------------------------------------
 // New game + page shell
 // ---------------------------------------------------------------------------
-function startGame(seed: number, players: number): void {
-    const board = generateBoard(rngFromSeed(seed));
+function startGame(seed: number, players: number, noSameNumbers = false): void {
+    const board = generateBoard(rngFromSeed(seed), { forbidAdjacentSameNumber: noSameNumbers });
     const seats = SEAT_DEFS.slice(0, players).map((s) => ({ id: s.id, name: PLAYER[s.color].name, color: s.color }));
     game = initialGameState(board, seats, seed);
     mode = { kind: 'normal' };
     victimChoice = null; tradeGive = null; discardSel = {};
     log = [`New game · seed ${seed} · ${players} players`];
+    moveCount = 0;
+    turnCount = 1;
     render();
 }
 
@@ -568,6 +623,16 @@ app.innerHTML = `
       <label>players
         <select id="playercount"><option>2</option><option>3</option><option selected>4</option></select>
       </label>
+      <label>opponent
+        <select id="opponent">
+          <option value="human" selected>humans (pass &amp; play)</option>
+          <option value="net">AI — fast (raw net)</option>
+          <option value="mcts">AI — strong (net + search)</option>
+        </select>
+      </label>
+      <label title="House rule: identical number tokens never on adjacent tiles">
+        <input id="nosame" type="checkbox" checked /> no same numbers adjacent
+      </label>
       <button id="newgame">New game</button>
       <a href="/" style="margin-left:auto;font-size:13px;color:var(--muted)">board viewer →</a>
     </div>
@@ -575,7 +640,7 @@ app.innerHTML = `
       <div class="panel"><div id="board"></div><div id="actions" style="margin-top:14px"></div></div>
       <div>
         <div class="panel" style="margin-bottom:18px"><h2>Players</h2><div id="players"></div></div>
-        <div class="panel"><h2>Log</h2><ul id="log"></ul></div>
+        <div class="panel"><h2>Log <small id="logstats" style="font-weight:normal;color:#8a7f6e"></small></h2><ul id="log"></ul></div>
       </div>
     </div>
   </div>
@@ -584,7 +649,32 @@ app.innerHTML = `
 
 const seedInput = document.getElementById('seed') as HTMLInputElement;
 const playerSelect = document.getElementById('playercount') as HTMLSelectElement;
-(document.getElementById('newgame') as HTMLButtonElement).onclick = () =>
-    startGame(Number(seedInput.value) || 0, Number(playerSelect.value));
+const opponentSelect = document.getElementById('opponent') as HTMLSelectElement;
+
+opponentSelect.onchange = () => {
+    if (opponentSelect.value !== 'human') {
+        playerSelect.value = '2';            // AI games are 1v1 (it plays seat 2)
+        playerSelect.disabled = true;
+    } else {
+        playerSelect.disabled = false;
+    }
+};
+
+(document.getElementById('newgame') as HTMLButtonElement).onclick = async () => {
+    botLevel = opponentSelect.value as BotLevel | 'human';
+    if (botLevel !== 'human' && !bot) {
+        toast('Loading AI model…');
+        try {
+            const { Bot } = await import('./bot');
+            bot = await Bot.load('/models/catan_net.onnx');
+        } catch (err) {
+            toast(`Could not load AI: ${err instanceof Error ? err.message : err}`);
+            botLevel = 'human';
+        }
+    }
+    const players = botLevel !== 'human' ? 2 : Number(playerSelect.value);
+    const noSame = (document.getElementById('nosame') as HTMLInputElement).checked;
+    startGame(Number(seedInput.value) || 0, players, noSame);
+};
 
 startGame(42, 4);

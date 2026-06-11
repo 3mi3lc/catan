@@ -5,3 +5,5 @@ export * from './greedy-policy';
 export * from './runner';
 export * from './search-policy'
 export * from './replay'
+export * from './encoding'
+export * from './mcts'

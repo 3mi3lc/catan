@@ -3,3 +3,5 @@ packages:
 allowBuilds:
   esbuild: true
   onnxruntime-node: true
+  # protobufjs's postinstall only prints a sponsorship note — not needed.
+  protobufjs: false
