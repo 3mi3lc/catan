@@ -76,6 +76,8 @@ def main() -> None:
                    default="greedy")
     p.add_argument("--model2",   default=None, help="Opponent .onnx/.pt for net2")
     p.add_argument("--arch2",    choices=["mlp", "gnn"], default="gnn")
+    p.add_argument("--players",  type=int, default=4, choices=[2, 3, 4],
+                   help="Seats per game (no-skill baseline ≈ 1/players)")
     p.add_argument("--games",    type=int, default=200)
     p.add_argument("--seed-base", type=int, default=5_000_000)
     p.add_argument("--workers",  type=int,
@@ -103,7 +105,8 @@ def main() -> None:
             jobs = [{
                 "seed": args.seed_base + g,
                 "opponent": args.opponent,
-                "netSeat": g % 2,
+                "numPlayers": args.players,
+                "netSeat": g % args.players,
                 "mode": args.mode,
                 **({"sims": args.sims, "tempMoves": 0, "noise": False,
                     "valueMix": args.value_mix, "rolloutCap": args.rollout_cap}

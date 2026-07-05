@@ -1,0 +1,198 @@
+/* Online client styles — extracted verbatim from the vanilla online.ts
+   <style> block during the React port. */
+:root{
+  --felt:#14110d; --felt2:#1c1712;
+  --ink:#ece3d0; --muted:#9d9078; --faint:#6e6450;
+  --line:#3a3226; --line2:#4a3f2e;
+  --brass:#c9a45c; --brass2:#e3c785; --glow:#ffd98c;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;color:var(--ink);overflow:hidden;
+  font-family:"Alegreya Sans",system-ui,sans-serif;font-size:15px;
+  background:linear-gradient(180deg,var(--felt2),var(--felt) 40%);
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{
+  height:100vh;display:flex;flex-direction:column;max-width:1380px;margin:0 auto;
+  padding:calc(10px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
+}
+.topbar{flex:0 0 auto;display:flex;align-items:center;gap:13px;padding:6px 2px 12px;border-bottom:1px solid var(--line);margin-bottom:14px}
+h1{font-family:"Marcellus",Georgia,serif;font-weight:400;font-size:22px;letter-spacing:4px;margin:0;color:var(--brass2);text-transform:uppercase}
+h1 small{font-size:10.5px;letter-spacing:2.5px;color:var(--faint);display:block;margin-top:-2px}
+#topbar-right{margin-left:12px;font-size:13px;color:var(--muted)}
+.sfx-control{display:flex;align-items:center;gap:7px;margin-left:12px}
+.sfx-control button{padding:6px 9px;font-size:14px;line-height:1}
+.sfx-control input[type=range]{width:70px;accent-color:var(--brass)}
+#main{flex:1;min-height:0}
+
+/* Account: topbar status + a dedicated login/signup screen (same screen
+   machinery as landing/lobby/game, not a popup) */
+.topbar-auth{display:flex;align-items:center;gap:10px;margin-left:auto;padding-left:14px;border-left:1px solid var(--line)}
+.topbar-auth .hint{font-size:12.5px}
+.topbar-auth button{padding:6px 12px;font-size:12.5px}
+.auth-card{max-width:380px;margin:40px auto}
+.auth-card .row{justify-content:flex-end}
+.auth-card a{color:var(--brass2)}
+.auth-error{background:#3a1c18;border:1px solid #7a3a30;color:#f3c4ba;border-radius:8px;padding:8px 11px;font-size:12.5px;margin-bottom:14px}
+.mygames-card{max-width:640px;margin:24px auto}
+.mygame-row{cursor:pointer}
+.mygame-row:hover{border-color:var(--brass)}
+
+.panel{
+  background:linear-gradient(180deg,#251f17,#1d1812);
+  border:1px solid var(--line);border-radius:16px;padding:16px;
+  box-shadow:0 24px 60px -32px #000, inset 0 1px 0 #ffffff0a;
+}
+h2{font-family:"Marcellus",serif;font-weight:400;font-size:14px;letter-spacing:2.5px;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+label{display:flex;flex-direction:column;gap:5px;font-size:12.5px;color:var(--muted);margin-bottom:10px}
+input,select{padding:7px 10px;border:1px solid var(--line2);border-radius:8px;background:var(--felt2);color:var(--ink);font:inherit}
+button{
+  font:inherit;font-weight:700;font-size:13px;letter-spacing:.4px;cursor:pointer;
+  border:1px solid #00000055;border-radius:9px;padding:8px 14px;
+  background:linear-gradient(180deg,var(--brass2),var(--brass) 55%,#a8843f);
+  color:#241b0c;box-shadow:0 2px 0 #00000066, inset 0 1px 0 #ffffff55;
+}
+button:hover{filter:brightness(1.08)}
+button:disabled{opacity:.35;cursor:not-allowed}
+button.ghost{background:transparent;color:var(--muted);border:1px solid var(--line2);box-shadow:none}
+.dot{width:13px;height:13px;border-radius:50%;display:inline-block;border:2px solid #00000066;margin-right:4px}
+.hint{color:var(--muted);font-size:13px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
+.badge{display:inline-block;background:#3a2f1c;color:var(--brass2);border:1px solid #c9a45c44;border-radius:6px;padding:1px 7px;font-size:10.5px;letter-spacing:.5px;margin-left:5px}
+
+/* Landing + lobby */
+.landing{display:grid;grid-template-columns:1fr 1fr;gap:18px;max-width:760px;margin:24px auto}
+.landing-card,.lobby-card{padding:22px}
+.seatrow{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}
+.seatrow select{margin-left:auto}
+.roomcode{color:var(--brass2);letter-spacing:2px}
+.lobby-card{max-width:560px;margin:24px auto}
+code{background:#171310;border:1px solid var(--line);border-radius:6px;padding:2px 6px;color:var(--brass2);font-size:12px}
+
+/* Game layout */
+.layout{height:100%;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 290px 310px;gap:18px;align-items:stretch}
+.boardpanel{padding:12px;border-color:var(--line2);display:flex;flex-direction:column;min-height:0}
+#board{flex:1;min-height:0;display:flex;align-items:center;justify-content:center}
+#board svg{width:100%;height:100%;border-radius:14px}
+.actioncol{display:flex;min-height:0}
+.sidebar{display:flex;flex-direction:column;gap:14px;min-height:0}
+.sidebar .panel{padding:14px}
+.chronicle{flex:1;min-height:0;display:flex;flex-direction:column}
+.hit{cursor:pointer}
+.pulse{animation:pulse 1.5s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.5}50%{opacity:1}}
+.pulse-ring{transform-box:fill-box;transform-origin:center;animation:pulseRing 1.6s ease-out infinite}
+@keyframes pulseRing{0%{transform:scale(.7);opacity:.55}100%{transform:scale(1.7);opacity:0}}
+.marching{animation:marchingAnts .6s linear infinite}
+@keyframes marchingAnts{to{stroke-dashoffset:-16}}
+.pulse-march{animation:pulse 1.5s ease-in-out infinite,marchingAnts .8s linear infinite}
+.born{transform-box:fill-box;transform-origin:center;animation:born .5s cubic-bezier(.3,1.6,.55,1) both}
+@keyframes born{0%{transform:scale(0);opacity:0}60%{opacity:1}100%{transform:scale(1)}}
+
+.actionpanel{flex:1;display:flex;flex-direction:column;min-height:0;padding:14px}
+#actions{display:flex;flex-direction:column;min-height:0;flex:1}
+#actions > .turnline,#actions > .row{flex:0 0 auto}
+.ctx{flex:1;min-height:0;overflow:auto;margin-top:12px;padding-top:12px;border-top:1px solid var(--line2)}
+.ctx:empty{border-top:none;margin-top:0}
+.turnline{font-size:15px;display:flex;align-items:center;gap:9px}
+.turnline b{font-family:"Marcellus",serif;font-weight:400;letter-spacing:.8px;font-size:16px}
+.won{font-family:"Marcellus",serif;font-size:22px;letter-spacing:1px;color:var(--glow)}
+
+.pcard{border:1px solid var(--line);border-radius:12px;padding:11px 12px;margin-bottom:10px;background:linear-gradient(180deg,#272015,#211b12)}
+.pcard.cur{border-color:var(--brass);box-shadow:0 0 0 1px #c9a45c55}
+.phead{display:flex;align-items:center;gap:8px;font-size:14px}
+.pname{font-family:"Marcellus",serif;letter-spacing:1px;font-size:15px}
+.vp{margin-left:auto;font-family:"Marcellus",serif;font-size:18px;color:var(--brass2)}
+.vp small{font-size:10px;color:var(--faint);letter-spacing:1px}
+.hand{display:flex;flex-wrap:wrap;gap:6px;margin:9px 0 7px}
+.res{display:inline-flex;align-items:center;gap:5px;font-size:12px;background:#171310;border:1px solid var(--line);border-left:4px solid var(--c);border-radius:7px;padding:3px 8px}
+.res b{font-weight:700;color:#fff}
+.cardback{display:inline-flex;align-items:center;gap:5px;font-size:13px;background:#171310;border:1px solid var(--line);border-radius:7px;padding:3px 8px;color:var(--muted)}
+.meta{font-size:11.5px;color:var(--faint)}
+
+[data-give],[data-receive],[data-monopoly],[data-yop]{background:#171310;color:var(--ink);border:1px solid var(--line);border-left:4px solid var(--c);box-shadow:none;font-weight:500}
+.trade.sel{outline:2px solid var(--brass);outline-offset:1px}
+.trade-wrap{margin-top:12px;border-top:1px dashed var(--line2);padding-top:10px}
+.trade-lab{font-size:11px;color:var(--faint);letter-spacing:1.5px;text-transform:uppercase;margin-top:6px}
+.dres{display:inline-flex;align-items:center;gap:5px;font-size:12px;background:#171310;border:1px solid var(--line);border-left:4px solid var(--c);border-radius:7px;padding:2px 5px}
+.dres button{padding:1px 8px;font-size:13px;background:var(--line2);color:var(--ink);border:none;box-shadow:none}
+
+#log{list-style:none;margin:0;padding:0;flex:1;min-height:0;overflow:auto;font-size:12.5px;color:var(--muted)}
+#log li{padding:5px 0;border-bottom:1px solid #2b241a}
+#log li:first-child{color:var(--ink)}
+
+#dice{position:fixed;top:16%;left:50%;transform:translateX(-50%);display:flex;gap:14px;pointer-events:none;opacity:0;z-index:60}
+#dice.show{animation:diceIn 1.6s cubic-bezier(.2,.9,.3,1) both}
+@keyframes diceIn{0%{opacity:0;transform:translateX(-50%) translateY(-26px) scale(.6)}12%{opacity:1;transform:translateX(-50%) translateY(0) scale(1.08)}20%{transform:translateX(-50%) scale(1)}78%{opacity:1}100%{opacity:0;transform:translateX(-50%) translateY(8px) scale(.94)}}
+.die{width:54px;height:54px;border-radius:12px;background:linear-gradient(160deg,#f6ecd4,#dccdaa);border:1px solid #8a6f3e}
+.die svg{width:100%;height:100%;display:block}
+
+#victory{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:70;background:#0a0805d0;backdrop-filter:blur(3px)}
+#victory.show{display:flex}
+.vcard{text-align:center;padding:42px 64px;border-radius:20px;position:relative;background:linear-gradient(180deg,#2b2317,#1d1812);border:1px solid var(--brass)}
+.vlaurel{font-size:42px;margin-bottom:6px}
+.vname{font-family:"Marcellus",serif;font-size:34px;letter-spacing:3px;color:var(--glow);margin:2px 0 4px}
+.vsub{color:var(--muted);font-size:14px;margin-bottom:24px}
+.vstats{display:flex;gap:28px;justify-content:center;margin-bottom:26px}
+.vstat{font-family:"Marcellus",serif;font-size:24px;color:var(--brass2)}
+.vstat small{display:block;font-family:"Alegreya Sans",sans-serif;font-size:10.5px;letter-spacing:2px;text-transform:uppercase;color:var(--faint);margin-top:3px}
+.spark{position:absolute;width:5px;height:5px;border-radius:50%;background:var(--glow);opacity:0;animation:spark 2.6s ease-in-out infinite}
+@keyframes spark{0%,100%{opacity:0;transform:translateY(0) scale(.6)}40%{opacity:.9;transform:translateY(-26px) scale(1)}80%{opacity:0;transform:translateY(-46px) scale(.4)}}
+.vlink{display:block;margin-top:14px;color:var(--brass2);font-size:13px;letter-spacing:.3px;text-decoration:none}
+.vlink:hover{color:var(--glow);text-decoration:underline}
+
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);background:#2e2517;color:var(--brass2);border:1px solid #c9a45c55;padding:10px 18px;border-radius:10px;font-size:13px;box-shadow:0 14px 34px -16px #000;opacity:0;pointer-events:none;transition:.2s}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+@media(max-width:1000px){.layout{grid-template-columns:minmax(0,1fr) 300px}.actioncol{grid-column:1 / -1;order:-1}.landing{grid-template-columns:1fr}}
+
+/* ── Phone-width: the whole page scrolls instead of everything trying to
+   fit in one fixed-height screen — the 3-column game layout collapses to a
+   single stacked column (board, then actions, then players/chronicle, in
+   that DOM order — already the natural reading/priority order) rather than
+   the 1000px breakpoint's 2-column arrangement, which still doesn't fit a
+   phone. Also: touch-friendlier button/input sizing, a header that wraps
+   instead of overflowing, and env(safe-area-inset-*) padding on .wrap (see
+   above) so nothing sits under a notch or the home-indicator area when this
+   runs inside the Capacitor shell — that only takes effect where
+   viewport-fit=cover is set (mobile.html), so it's a no-op on desktop/plain
+   web (online.html). */
+@media(max-width:640px){
+  body{overflow-y:auto;overflow-x:hidden}
+  .wrap{height:auto;min-height:100vh}
+  #main{overflow:visible}
+
+  .topbar{flex-wrap:wrap;row-gap:8px}
+  h1{font-size:18px;letter-spacing:2px}
+  h1 small{font-size:9px;letter-spacing:1.5px}
+  .topbar-auth{margin-left:0;padding-left:0;border-left:none;flex-basis:100%;justify-content:flex-end}
+  .topbar-auth button{padding:9px 14px;font-size:13px}
+
+  button{padding:11px 16px;font-size:14px}
+  input,select{padding:10px 12px;font-size:14px}
+  .sfx-control button{padding:9px 12px;font-size:16px}
+  .sfx-control input[type=range]{width:56px}
+
+  .landing{gap:14px}
+  .landing-card,.lobby-card,.auth-card,.mygames-card{padding:16px}
+
+  /* min-width:0 on every grid/flex item below: without it, a flex/grid item
+     won't shrink past its CONTENT's natural width (the classic overflow
+     gotcha) — .actioncol's row of buttons was overflowing the single 1fr
+     column by ~120px until this was added. */
+  .layout{grid-template-columns:1fr;grid-auto-rows:auto;gap:14px;height:auto}
+  .boardpanel{aspect-ratio:1/1;flex:none;min-height:0;min-width:0}
+  #board{position:static}
+  #board svg{width:100%;height:auto;aspect-ratio:1/1}
+  .actioncol{grid-column:auto;order:0;height:auto;min-width:0}
+  .actionpanel{flex:1;min-height:0;min-width:0}
+  .ctx{overflow:visible;max-height:none}
+  .sidebar{height:auto;min-width:0}
+  .chronicle{flex:none}
+  #log{max-height:260px}
+
+  .vcard{padding:32px 24px}
+  .vname{font-size:26px}
+  .vstats{gap:18px}
+}

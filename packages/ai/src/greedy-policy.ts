@@ -1,5 +1,5 @@
 import {
-  legalActions, COSTS, tradeRatio,
+  legalActions, tradeRatio,
   type GameState, type Action, type PlayerId, type Resource, type EdgeId, type VertexId,
 } from '@catan/core';
 import type { Policy } from './policy';
@@ -8,6 +8,7 @@ import {
   type Weights, DEFAULT_WEIGHTS, vertexScore, vertexProduction, argmax,
   robberScore, discardAction, roadExpansionValue, bestYopTake,
 } from './heuristics';
+import { tradeFlowAction, proposeStart } from './trade-heuristic';
 
 const STRONG_ROBBER = 6; // play a knight aggressively only if the target is juicy
 
@@ -20,6 +21,10 @@ export function greedyPolicy(weights: Weights = DEFAULT_WEIGHTS, name = 'greedy'
 }
 
 function decide(state: GameState, player: PlayerId, w: Weights): Action {
+  // Trade negotiation in flight (off-turn; phase is still 'main') — finish the
+  // draft, reply to an offer, or arbitrate. (Proposing is at rung 4b below.)
+  const flow = tradeFlowAction(state, player);
+  if (flow) return flow;
   const acts = legalActions(state, player);
   switch (state.phase) {
     case 'setupSettlement': {
@@ -80,6 +85,11 @@ function mainDecision(state: GameState, player: PlayerId, w: Weights, acts: Acti
     const take = bestYopTake(state, player);
     if (take) return { type: 'playYearOfPlenty', take };
   }
+
+  // 4b. Player trade — propose ONE 1:1 swap per turn to complete a build (cheaper
+  //     than the bank's 4:1), before falling back to bank trades.
+  const offer = proposeStart(state, player);
+  if (offer) return offer;
 
   // 5. Bank trade to complete a city we're one resource short of.
   if (cityShort) {

@@ -12,18 +12,22 @@
  *     phase are auto-resolved inside the tree, so dice chains are absorbed
  *     between decision nodes.
  *
- * Two-player only (values are P(win) for the node's actor; the opponent's
- * perspective is 1 − v).
+ * Multiplayer (2–4 seats), non-zero-sum: the value is a vector of per-seat win
+ * probabilities, ordered RELATIVE to the evaluated node's actor (index 0 =
+ * P(actor wins), index k = P(the player k seats later in turn order wins)).
+ * MCTS does maxn backup — every node's actor maximises its OWN component —
+ * replacing the old 2-player `1 − v` zero-sum backup.
  *
  * The evaluator is async (ONNX inference); `runMcts` is therefore async.
  */
 
 import { applyMove, victoryPoints, type GameState, type PlayerId } from '@catan/core';
 import {
-    encodeObservation, legalMask, indexToAction, ACT_SIZE,
+    encodeObservation, legalMask, legalMaskNoTrade, indexToAction, ACT_SIZE, MAX_SEATS,
     type BoardIndex,
 } from './encoding';
 import { discardAction } from './heuristics';
+import { heuristicTradeAction } from './trade-heuristic';
 import { greedyPolicy } from './greedy-policy';
 import type { Policy } from './policy';
 
@@ -33,10 +37,12 @@ export interface NetEvaluator {
     /**
      * Evaluate `state` from `player`'s perspective.
      * Returns masked-normalised priors over ACT_SIZE (zero on illegal slots)
-     * and P(player wins) ∈ (0, 1).
+     * and a per-seat win-probability vector of length MAX_SEATS, ordered
+     * relative to `player` (index 0 = P(player wins), index k = the player k
+     * seats later in turn order). Pad slots for absent seats should be ~0.
      */
     evaluate(state: GameState, player: PlayerId, mask: Uint8Array):
-        Promise<{ priors: Float32Array; winProb: number }>;
+        Promise<{ priors: Float32Array; winProbs: Float32Array }>;
 }
 
 export interface MctsOptions {
@@ -78,7 +84,7 @@ interface Edge {
     actionIdx: number;
     prior: number;
     visits: number;
-    valueSum: number;        // from the parent node actor's perspective
+    valueSum: number;        // Σ P(this node's actor wins) over visits (maxn Q)
     child: Node | null;
 }
 
@@ -98,20 +104,47 @@ function withFreshRng(state: GameState, rand: () => number): GameState {
 }
 
 /**
+ * Who must act in `state`: the composer of an open draft, then each opponent
+ * replying to a broadcast offer, then the proposer arbitrating — all off-turn —
+ * else the first card-ower during discard, otherwise the current player.
+ */
+export function decisionActor(s: GameState): PlayerId {
+    if (s.draftOffer) return s.draftOffer.by;
+    if (s.negotiation) {
+        const neg = s.negotiation;
+        if (neg.stage === 'responding')
+            return s.turnOrder.find((p) => p !== neg.proposer && neg.responses[p] === 'pending')!;
+        return neg.proposer; // arbitrating
+    }
+    if (s.phase === 'discard') return Object.keys(s.pendingDiscards)[0] as PlayerId;
+    return s.currentPlayer;
+}
+
+/**
  * Advance `state` until it is terminal or some player faces a real decision:
- * auto-resolves the discard phase (heuristic) and forced single-legal moves
- * (rollDice etc.). Chance inside those moves uses the search RNG.
+ * auto-resolves the discard phase (heuristic), player-to-player TRADES (the
+ * heuristic owns every trade decision, so the search never branches on them),
+ * and forced single-legal moves. Decision nodes expose only NON-trade actions —
+ * the net plays the game; the heuristic plays the trades.
  */
 function advance(
     state: GameState, bi: BoardIndex, rand: () => number,
 ): { state: GameState; actor: PlayerId; mask: Uint8Array } | { terminal: GameState } {
     let s = state;
-    for (let guard = 0; guard < 64; guard++) {
+    for (let guard = 0; guard < 96; guard++) {
         if (s.winner) return { terminal: s };
 
-        const actor: PlayerId = s.phase === 'discard'
-            ? (Object.keys(s.pendingDiscards)[0] as PlayerId)
-            : s.currentPlayer;
+        const actor: PlayerId = decisionActor(s);
+
+        // Trades (compose / reply / arbitrate / open an offer) are resolved by
+        // the heuristic as forced moves and never become decision nodes.
+        const trade = heuristicTradeAction(s, actor);
+        if (trade) {
+            const res = applyMove(withFreshRng(s, rand), { player: actor, action: trade });
+            if (!res.ok) return { terminal: s };
+            s = res.state;
+            continue;
+        }
 
         if (s.phase === 'discard') {
             const res = applyMove(withFreshRng(s, rand),
@@ -121,7 +154,7 @@ function advance(
             continue;
         }
 
-        const mask = legalMask(s, actor, bi);
+        const mask = legalMaskNoTrade(s, actor, bi);
         let legalCount = 0, onlyIdx = -1;
         for (let i = 0; i < mask.length; i++) {
             if (mask[i] === 1) { legalCount++; onlyIdx = i; }
@@ -146,36 +179,57 @@ function advance(
     return { terminal: s }; // forced-move chain too long; treat as leaf
 }
 
+/** Relative turn offset of `q` from `actor` (0 = actor itself), in 0..n−1. */
+function relOffset(state: GameState, actor: PlayerId, q: PlayerId): number {
+    const order = state.turnOrder;
+    const n = order.length;
+    return (order.indexOf(q) - order.indexOf(actor) + n) % n;
+}
+
+/** A length-MAX_SEATS win-prob vector relative to `actor`, one-hot on `winner`
+ *  (uniform over seats if there is no winner). */
+function oneHotProbs(state: GameState, actor: PlayerId, winner: PlayerId | null): Float32Array {
+    const v = new Float32Array(MAX_SEATS);
+    const n = state.turnOrder.length;
+    if (winner == null) { for (let i = 0; i < n; i++) v[i] = 1 / n; return v; }
+    v[relOffset(state, actor, winner)] = 1;
+    return v;
+}
+
 /**
- * Truncated greedy rollout from `state`, scored for `player` in [0, 1].
- * Same idea as search-policy.ts's playouts: if no one wins within the cap,
- * estimate from the victory-point gap, kept away from 0/1 to admit doubt.
+ * Truncated greedy rollout from `state`, scored as a per-seat win-prob vector
+ * relative to `player`. Same idea as search-policy.ts's playouts: if no one
+ * wins within the cap, estimate from a softmax over victory points so search
+ * stays grounded while the value head is young.
  */
-function rolloutScore(
+function rolloutProbs(
     state: GameState,
     player: PlayerId,
     policy: Policy,
     cap: number,
     rand: () => number,
-): number {
+): Float32Array {
     let s = state;
     for (let i = 0; i < cap && !s.winner; i++) {
-        const actor: PlayerId = s.phase === 'discard'
-            ? (Object.keys(s.pendingDiscards)[0] as PlayerId)
-            : s.currentPlayer;
+        const actor: PlayerId = decisionActor(s);
         const res = applyMove(withFreshRng(s, rand),
             { player: actor, action: policy.decide(s, actor) });
         if (!res.ok) break;
         s = res.state;
     }
-    if (s.winner === player) return 1;
-    if (s.winner !== null) return 0;
-    const mine = victoryPoints(s, player);
-    let oppMax = 0;
+    if (s.winner != null) return oneHotProbs(s, player, s.winner);
+
+    // No winner within the cap: soft estimate from the VP standings.
+    const v = new Float32Array(MAX_SEATS);
+    const n = s.turnOrder.length;
+    let sum = 0;
     for (const p of s.turnOrder) {
-        if (p !== player) oppMax = Math.max(oppMax, victoryPoints(s, p));
+        const off = relOffset(s, player, p);
+        const w = Math.exp(0.4 * victoryPoints(s, p));
+        v[off] = w; sum += w;
     }
-    return Math.min(0.95, Math.max(0.05, 0.5 + 0.08 * (mine - oppMax)));
+    if (sum > 0) for (let i = 0; i < n; i++) v[i] /= sum;
+    return v;
 }
 
 /** Gamma(alpha) sample via Marsaglia–Tsang (alpha < 1 boost included). */
@@ -260,9 +314,10 @@ interface Ctx {
     rolloutPolicy: Policy;
 }
 
-/** Expand a node and return its blended leaf value (P(node.actor wins)). */
-async function expand(node: Node, ctx: Ctx): Promise<number> {
-    const { priors, winProb } =
+/** Expand a node and return its blended leaf value vector (per-seat win probs
+ *  relative to node.actor). */
+async function expand(node: Node, ctx: Ctx): Promise<Float32Array> {
+    const { priors, winProbs } =
         await ctx.evaluator.evaluate(node.state, node.actor, node.mask);
     node.edges = [];
     for (let i = 0; i < ACT_SIZE; i++) {
@@ -274,8 +329,8 @@ async function expand(node: Node, ctx: Ctx): Promise<number> {
     }
     node.expanded = true;
 
-    if (ctx.valueMix >= 1 || ctx.rand() < ctx.valueMix) return winProb;
-    return rolloutScore(
+    if (ctx.valueMix >= 1 || ctx.rand() < ctx.valueMix) return winProbs;
+    return rolloutProbs(
         node.state, node.actor, ctx.rolloutPolicy, ctx.rolloutCap, ctx.rand);
 }
 
@@ -288,7 +343,9 @@ async function simulate(
     // Walk down with PUCT until an unexpanded child or terminal.
     const path: { node: Node; edge: Edge }[] = [];
     let node = root;
-    let leafValue = 0.5;             // P(leafActor wins)
+    // Per-seat win-prob vector at the leaf, relative to leafActor.
+    let leafProbs: Float32Array =
+        new Float32Array(MAX_SEATS).fill(1 / Math.max(1, root.state.turnOrder.length));
     let leafActor: PlayerId = root.actor;
 
     for (let depth = 0; depth < maxDepth; depth++) {
@@ -319,16 +376,15 @@ async function simulate(
             }
             const adv = advance(res.state, bi, rand);
             if ('terminal' in adv) {
-                const w = adv.terminal.winner;
                 leafActor = node.actor;
-                leafValue = w === null ? 0.5 : (w === node.actor ? 1 : 0);
+                leafProbs = oneHotProbs(adv.terminal, leafActor, adv.terminal.winner);
             } else {
                 const child: Node = {
                     state: adv.state, actor: adv.actor, mask: adv.mask,
                     edges: [], expanded: false,
                 };
                 bestEdge.child = child;
-                leafValue = await expand(child, ctx);
+                leafProbs = await expand(child, ctx);
                 leafActor = child.actor;
             }
             break;
@@ -337,21 +393,22 @@ async function simulate(
         node = bestEdge.child;
         if (node.state.winner) {
             leafActor = node.actor;
-            leafValue = node.state.winner === node.actor ? 1 : 0;
+            leafProbs = oneHotProbs(node.state, leafActor, node.state.winner);
             break;
         }
         if (!node.expanded) {
-            leafValue = await expand(node, ctx);
+            leafProbs = await expand(node, ctx);
             leafActor = node.actor;
             break;
         }
     }
 
-    // Backup (2-player: opponent perspective is 1 − v).
+    // maxn backup: each node's edge accumulates P(that node's actor wins),
+    // read from the leaf vector at the actor's seat offset relative to leafActor.
     for (const { node: n, edge } of path) {
-        const v = n.actor === leafActor ? leafValue : 1 - leafValue;
+        const off = relOffset(n.state, leafActor, n.actor);
         edge.visits += 1;
-        edge.valueSum += v;
+        edge.valueSum += leafProbs[off] ?? 0;
     }
 }
 

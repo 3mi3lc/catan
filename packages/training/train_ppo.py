@@ -2,6 +2,13 @@
 """
 train_ppo.py — PPO self-play: train CatanNet to beat itself (and greedy).
 
+⚠️ DEPRECATED / INCOMPATIBLE with the 4-seat representation. This was the
+   capped/abandoned 2-player path (scalar sigmoid value + binary win/loss
+   reward). The current pipeline is seat-relative 4-player with a per-seat
+   value head ([B,4], cross-entropy) and Expert Iteration (train_exit.py).
+   This script's GAE/value code assumes the old scalar value and will break
+   against the new model — use train_exit.py instead. Kept only for reference.
+
 This is Phase 2 of the RL pipeline.  Warm-starts from the BC checkpoint so the
 agent already knows the game mechanics; self-play then pushes it beyond greedy.
 
@@ -508,6 +515,13 @@ def _export_onnx(model: CatanNet, out_dir: str, it: int, device: torch.device) -
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    if "--i-know-this-is-deprecated" not in sys.argv:
+        sys.exit(
+            "train_ppo.py is incompatible with the 4-seat model (per-seat value "
+            "head, cross-entropy). Use train_exit.py. To run anyway for "
+            "reference, pass --i-know-this-is-deprecated.")
+    sys.argv = [a for a in sys.argv if a != "--i-know-this-is-deprecated"]
+
     p = argparse.ArgumentParser(
         description="PPO self-play for CatanNet",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,

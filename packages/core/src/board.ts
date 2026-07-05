@@ -25,6 +25,16 @@ export const TERRAIN_RESOURCE: Record<Terrain, Resource | null> = {
 // Harbours: a 3:1 generic port, or a 2:1 port for one specific resource.
 export type Port = { kind: '3:1' } | { kind: '2:1'; resource: Resource };
 
+// A placed harbour and the two vertices that access it. Recorded explicitly
+// (rather than inferred by grouping vertices that share a Port object) so the
+// pairing survives a JSON round-trip — e.g. a Board sent to a client over the
+// network deserializes each vertex's `port` into its own distinct object,
+// even though on the server the two vertices originally pointed at the same one.
+export interface PortGroup {
+  port: Port;
+  vertices: [VertexId, VertexId];
+}
+
 // Axial hex coordinates. Neighbour math is clean in this system:
 // a tile's six neighbours are (q±1, r), (q, r±1), (q+1, r-1), (q-1, r+1).
 export interface AxialCoord {
@@ -65,4 +75,5 @@ export interface Board {
   tiles: Record<TileId, Tile>;
   vertices: Record<VertexId, Vertex>;
   edges: Record<EdgeId, Edge>;
+  ports: PortGroup[];
 }

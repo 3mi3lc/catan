@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-build-only override of app/src/main/res/xml/network_security_config.xml
+  (same resource path under the `debug` source set — Gradle merges this in
+  for assembleDebug/`cap:dev`/`cap run android`, and it never ships in a
+  release build). Permits cleartext to ANY host, not just localhost/127.0.0.1
+  — needed because the live-reload workflow (CAP_LIVE_RELOAD_URL) points at
+  whatever LAN IP the dev machine currently has, which isn't knowable ahead
+  of time. Safe to be this broad specifically because it's debug-only.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

@@ -21,8 +21,25 @@ export type Action =
   | { type: 'moveRobber'; tile: TileId; stealFrom: PlayerId | null }
   | { type: 'discard'; resources: ResourceBundle }
   | { type: 'bankTrade'; give: Resource; giveCount: number; receive: Resource }
-  | { type: 'proposeTrade'; to: PlayerId | 'all'; give: ResourceBundle; want: ResourceBundle }
-  | { type: 'respondToTrade'; tradeId: string; accept: boolean }
+  // Player-to-player trade negotiation (full normal-game flow):
+  //  • The active player composes a bundle card-by-card (offerAddGive/Want) and
+  //    BROADCASTS it to all opponents (offerBroadcast), or cancels the draft.
+  //  • Each opponent replies: accept, reject, or counter — a counter is itself
+  //    composed card-by-card then submitted (offerAddGive/Want reused, then
+  //    submitCounter); counterStart opens that compose.
+  //  • Once everyone has replied, the proposer arbitrates: confirmTrade(to)
+  //    executes with one accepter/counterer, or declineAll ends it. Several
+  //    offers may be made per turn (capped). Counters are single-level.
+  | { type: 'offerAddGive'; resource: Resource }
+  | { type: 'offerAddWant'; resource: Resource }
+  | { type: 'offerBroadcast' }
+  | { type: 'offerCancel' }
+  | { type: 'respondAccept' }
+  | { type: 'respondReject' }
+  | { type: 'counterStart' }
+  | { type: 'submitCounter' }
+  | { type: 'confirmTrade'; to: PlayerId }
+  | { type: 'declineAll' }
   | { type: 'endTurn' };
 
 export type ActionType = Action['type'];
@@ -42,7 +59,7 @@ export type GameEvent =
   | { type: 'built'; player: PlayerId; what: BuildingKindOrRoad }
   | { type: 'robberMoved'; tile: TileId; from: PlayerId | null; stolen: Resource | null }
   | { type: 'devCardBought'; player: PlayerId }
-  | { type: 'tradeExecuted'; between: [PlayerId, PlayerId] }
+  | { type: 'tradeExecuted'; between: [PlayerId, PlayerId]; proposerGives: ResourceBundle; proposerGets: ResourceBundle }
   | { type: 'awardMoved'; award: 'longestRoad' | 'largestArmy'; to: PlayerId }
   | { type: 'gameWon'; player: PlayerId };
 

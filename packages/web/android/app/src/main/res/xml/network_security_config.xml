@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Capacitor's `server.cleartext` config option only sets the `cleartext`
+  flag in the runtime capacitor.config.json — as of Capacitor 8, nothing in
+  @capacitor/cli or @capacitor/android actually patches the manifest's
+  usesCleartextTraffic/networkSecurityConfig for you (confirmed: no mention
+  of "cleartext" anywhere in node_modules). Without a networkSecurityConfig,
+  Android's default policy (API 28+) blocks any plain-HTTP connection
+  (net::ERR_CLEARTEXT_NOT_PERMITTED).
+
+  This is the config release/non-debug builds get — scoped to loopback only,
+  which release never even needs (androidScheme: 'https' always, per
+  capacitor.config.ts). The live-reload dev workflow (CAP_LIVE_RELOAD_URL)
+  needs broader cleartext (arbitrary LAN IPs, not just loopback) — see
+  app/src/debug/res/xml/network_security_config.xml, which Gradle swaps in
+  automatically for debug builds only.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

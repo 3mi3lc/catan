@@ -1,4 +1,4 @@
-import { Board, Tile, Vertex, Edge, Terrain, AxialCoord, Port, Resource, RESOURCES } from './board';
+import { Board, Tile, Vertex, Edge, Terrain, AxialCoord, Port, PortGroup, Resource, RESOURCES } from './board';
 import {
   TileId, VertexId, EdgeId,
   asTileId, asVertexId, asEdgeId,
@@ -197,7 +197,7 @@ export function generateBoard(rng: Rng = Math.random, options: BoardOptions = {}
   });
 
   // 4. Assign number tokens to the 18 non-desert tiles, honouring the red rule.
-  const board: Board = { tiles, vertices, edges };
+  const board: Board = { tiles, vertices, edges, ports: [] };
   const adjacency = tileAdjacency(board);
   const nonDesert = Object.values(tiles).filter((t) => t.terrain !== 'desert').map((t) => t.id);
 
@@ -273,19 +273,14 @@ function placePorts(board: Board, rng: Rng): void {
     const edge = board.edges[ring[pos]];
     board.vertices[edge.vertices[0]].port = port;
     board.vertices[edge.vertices[1]].port = port;
+    board.ports.push({ port, vertices: edge.vertices });
   });
 }
 
 // Enumerate the placed harbours, each with the two vertices that access it.
-// Ports are stored on vertices (a settlement on either vertex uses the port);
-// the same Port object is shared by its two vertices, so identity groups them.
-export function boardPorts(board: Board): { port: Port; vertices: VertexId[] }[] {
-  const byPort = new Map<Port, VertexId[]>();
-  for (const v of Object.values(board.vertices)) {
-    if (!v.port) continue;
-    const list = byPort.get(v.port) ?? [];
-    list.push(v.id);
-    byPort.set(v.port, list);
-  }
-  return [...byPort].map(([port, vertices]) => ({ port, vertices }));
+// Recorded explicitly on the board at generation time (see `PortGroup`) —
+// not inferred by grouping vertices that share a Port object, since that
+// grouping breaks once a Board has been serialized (e.g. sent to a client).
+export function boardPorts(board: Board): PortGroup[] {
+  return board.ports;
 }

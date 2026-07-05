@@ -12,8 +12,9 @@ const rngFromSeed = (seed: number) => {
 };
 
 // Replay-archive types (used by benchmark.ts and the replay viewer) live in
-// replay.ts; re-exported here for convenience.
-export type { MoveRecord, GameArchive } from './replay';
+// @catan/core now (pure engine-replay logic, no AI/ML dependency);
+// re-exported here for convenience/back-compat.
+export type { MoveRecord, GameArchive } from '@catan/core';
 
 // ── Match / tournament types ──────────────────────────────────────────────────
 

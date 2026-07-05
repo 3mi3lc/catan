@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { applyMove, legalActions, generateBoard, initialGameState } from '@catan/core';
-import type { GameState, PlayerId } from '@catan/core';
+import type { GameState, PlayerId, Action } from '@catan/core';
 import { greedyPolicy } from './greedy-policy';
 import { playMatch } from './runner';
 import {
@@ -18,6 +18,33 @@ function makeGame(seed = 1): GameState {
         { id: 'p0', name: 'Blue', color: 'blue' },
         { id: 'p1', name: 'Red',  color: 'red'  },
     ], seed);
+}
+
+function makeGame4(seed = 1): GameState {
+    const rng = (() => {
+        let s = seed >>> 0;
+        return () => { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return (s >>> 0) / 0xffffffff; };
+    })();
+    const board = generateBoard(rng);
+    return initialGameState(board, [
+        { id: 'p0', name: 'Blue',   color: 'blue'   },
+        { id: 'p1', name: 'Red',    color: 'red'    },
+        { id: 'p2', name: 'White',  color: 'white'  },
+        { id: 'p3', name: 'Orange', color: 'orange' },
+    ], seed);
+}
+
+// Whoever must act next: a draft composer, then each replying opponent, then the
+// arbitrating proposer (all off-turn); otherwise the current player.
+function actorOf(s: GameState): PlayerId {
+    if (s.draftOffer) return s.draftOffer.by;
+    if (s.negotiation) {
+        const neg = s.negotiation;
+        if (neg.stage === 'responding')
+            return s.turnOrder.find((p) => p !== neg.proposer && neg.responses[p] === 'pending')!;
+        return neg.proposer;
+    }
+    return s.currentPlayer;
 }
 
 // Advance past setup into the main game.
@@ -75,8 +102,9 @@ describe('encoding — action round-trip', () => {
         let state = advancePastSetup(makeGame(3));
         // Step forward a few turns so we have a richer legal-action set.
         for (let i = 0; i < 20 && !state.winner; i++) {
-            const acts = legalActions(state, state.currentPlayer);
-            const res  = applyMove(state, { player: state.currentPlayer, action: acts[0] });
+            const actor = actorOf(state);
+            const acts = legalActions(state, actor);
+            const res  = applyMove(state, { player: actor, action: acts[0] });
             if (!res.ok) break;
             state = res.state;
         }
@@ -100,6 +128,97 @@ describe('encoding — action round-trip', () => {
         const indices = acts.map(a => actionToIndex(a, state, player, bi));
         const unique  = new Set(indices);
         expect(unique.size).toBe(indices.length);
+    });
+});
+
+describe('encoding — 4-player seat-relative', () => {
+    it('observation is exactly OBS_SIZE with all values in [0, 1]', () => {
+        const state = advancePastSetup(makeGame4(13));
+        const bi    = buildBoardIndex(state.board);
+        for (const player of state.turnOrder) {
+            const obs = encodeObservation(state, player, bi);
+            expect(obs.length).toBe(OBS_SIZE);
+            for (let i = 0; i < obs.length; i++) {
+                expect(obs[i], `player ${player} index ${i}`).toBeGreaterThanOrEqual(0);
+                expect(obs[i], `player ${player} index ${i}`).toBeLessThanOrEqual(1);
+            }
+        }
+    });
+
+    it('robber/knight steal targets round-trip to the correct relative opponent', () => {
+        const state  = advancePastSetup(makeGame4(11));
+        const bi     = buildBoardIndex(state.board);
+        const player = state.turnOrder[0];
+        const tile   = bi.tiles[5];
+        const opponents = state.turnOrder.filter(p => p !== player);
+        expect(opponents.length).toBe(3);
+
+        for (const opp of opponents) {
+            for (const action of [
+                { type: 'moveRobber', tile, stealFrom: opp },
+                { type: 'playKnight', robberTo: tile, stealFrom: opp },
+            ] as const) {
+                const idx = actionToIndex(action, state, player, bi);
+                expect(idx).toBeGreaterThanOrEqual(0);
+                expect(idx).toBeLessThan(ACT_SIZE);
+                const back = indexToAction(idx, state, player, bi);
+                expect(back.type).toBe(action.type);
+                expect((back as { stealFrom?: PlayerId | null }).stealFrom).toBe(opp);
+                const backTile = back.type === 'moveRobber' ? back.tile : (back as { robberTo: string }).robberTo;
+                expect(backTile).toBe(tile);
+            }
+        }
+    });
+
+    it('trade negotiation actions round-trip', () => {
+        const state  = advancePastSetup(makeGame4(31));
+        const bi     = buildBoardIndex(state.board);
+        const player = state.turnOrder[0];
+        const opponents = state.turnOrder.filter(p => p !== player);
+
+        // offerAddGive / offerAddWant for each resource.
+        for (const r of ['brick', 'lumber', 'wool', 'grain', 'ore'] as const) {
+            for (const type of ['offerAddGive', 'offerAddWant'] as const) {
+                const idx = actionToIndex({ type, resource: r }, state, player, bi);
+                expect(idx).toBeGreaterThanOrEqual(376);
+                expect(idx).toBeLessThan(ACT_SIZE);
+                expect((indexToAction(idx, state, player, bi) as { type: string; resource: string }))
+                    .toMatchObject({ type, resource: r });
+            }
+        }
+
+        // Singletons round-trip to distinct, stable slots.
+        const singles = ['offerBroadcast', 'offerCancel', 'respondAccept', 'respondReject',
+            'counterStart', 'submitCounter', 'declineAll'] as const;
+        const seen = new Set<number>();
+        for (const type of singles) {
+            const idx = actionToIndex({ type } as Action, state, player, bi);
+            expect(seen.has(idx)).toBe(false);
+            seen.add(idx);
+            expect(indexToAction(idx, state, player, bi).type).toBe(type);
+        }
+
+        // confirmTrade to each relative opponent.
+        for (const to of opponents) {
+            const idx = actionToIndex({ type: 'confirmTrade', to }, state, player, bi);
+            const back = indexToAction(idx, state, player, bi);
+            expect(back.type).toBe('confirmTrade');
+            expect((back as { to: PlayerId }).to).toBe(to);
+        }
+    });
+
+    it('the 4 robber steal groups (none + 3 opponents) occupy distinct indices', () => {
+        const state  = advancePastSetup(makeGame4(21));
+        const bi     = buildBoardIndex(state.board);
+        const player = state.turnOrder[0];
+        const tile   = bi.tiles[3];
+        const targets: (PlayerId | null)[] = [null, ...state.turnOrder.filter(p => p !== player)];
+        const idxs = targets.map(t =>
+            actionToIndex({ type: 'moveRobber', tile, stealFrom: t }, state, player, bi));
+        expect(new Set(idxs).size).toBe(4);
+        for (const i of idxs) { expect(i).toBeGreaterThanOrEqual(224); expect(i).toBeLessThan(300); }
+        // null must reconstruct to null, not an opponent.
+        expect((indexToAction(idxs[0], state, player, bi) as { stealFrom: PlayerId | null }).stealFrom).toBeNull();
     });
 });
 
@@ -135,8 +254,9 @@ describe('encoding — legal mask', () => {
         let found = false;
         for (let i = 0; i < 300 && !found; i++) {
             if (Object.keys(state.pendingDiscards).length > 0) { found = true; break; }
-            const acts = legalActions(state, state.currentPlayer);
-            const res  = applyMove(state, { player: state.currentPlayer, action: acts[0] });
+            const actor = actorOf(state);
+            const acts = legalActions(state, actor);
+            const res  = applyMove(state, { player: actor, action: acts[0] });
             if (!res.ok) break;
             state = res.state;
         }

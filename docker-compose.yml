@@ -1,0 +1,16 @@
+# Local-dev-only Postgres for @catan/server. Not used by the production
+# Dockerfile/deploy — point DATABASE_URL at a managed Postgres instance there.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: catan
+      POSTGRES_PASSWORD: catan
+      POSTGRES_DB: catan
+    ports:
+      - "5432:5432"
+    volumes:
+      - catan_pg_data:/var/lib/postgresql/data
+
+volumes:
+  catan_pg_data:

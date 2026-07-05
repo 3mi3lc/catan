@@ -41,6 +41,7 @@ from torch.utils.data import DataLoader, random_split
 
 from dataset import load_dataset, OBS_SIZE
 from model_gnn import build_model
+from tqdm import tqdm
 
 
 # ── Training loop ─────────────────────────────────────────────────────────────
@@ -59,7 +60,7 @@ def train(args: argparse.Namespace) -> None:
     )
     print(f"Split: {n_train:,} train  {n_val:,} val")
 
-    loader_kw = dict(batch_size=args.batch, pin_memory=(device.type == "cuda"), num_workers=0)
+    loader_kw = dict(batch_size=args.batch, pin_memory=(device.type == "cuda"), num_workers=0, )
     train_loader = DataLoader(train_ds, shuffle=True,  **loader_kw)
     val_loader   = DataLoader(val_ds,   shuffle=False, **loader_kw)
 
@@ -72,9 +73,9 @@ def train(args: argparse.Namespace) -> None:
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=args.epochs)
 
     policy_loss_fn = nn.CrossEntropyLoss()
-    # Value head outputs a RAW logit (no Sigmoid — see model.py), so the
-    # with-logits form is required; plain BCELoss would reject the inputs.
-    value_loss_fn  = nn.BCEWithLogitsLoss()
+    # Value head outputs per-seat raw logits ([B, N_SEATS]); the target is the
+    # winner's seat-relative class, so cross-entropy (not BCE).
+    value_loss_fn  = nn.CrossEntropyLoss()
 
     os.makedirs(args.out_dir, exist_ok=True)
     best_val_loss = float("inf")
@@ -90,12 +91,12 @@ def train(args: argparse.Namespace) -> None:
         # ── Train epoch ───────────────────────────────────────────────────────
         model.train()
         tp = tv = ta = tn = 0.0
-        for obs, actions, outcomes in train_loader:
+        for obs, actions, outcomes in tqdm(train_loader, desc=f"Epoch {epoch}", leave=False):
             obs, actions, outcomes = obs.to(device), actions.to(device), outcomes.to(device)
             pol, val = model(obs)
 
             ploss = policy_loss_fn(pol, actions)
-            vloss = value_loss_fn(val.squeeze(1), outcomes)
+            vloss = value_loss_fn(val, outcomes)
             loss  = ploss + args.value_weight * vloss
 
             optimiser.zero_grad(set_to_none=True)
@@ -120,7 +121,7 @@ def train(args: argparse.Namespace) -> None:
                 pol, val = model(obs)
                 b = len(obs)
                 vp += policy_loss_fn(pol, actions).item() * b
-                vv += value_loss_fn(val.squeeze(1), outcomes).item() * b
+                vv += value_loss_fn(val, outcomes).item() * b
                 va += (pol.argmax(1) == actions).float().mean().item() * b
                 vn += b
 

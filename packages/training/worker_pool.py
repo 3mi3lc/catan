@@ -13,7 +13,7 @@ Protocol:
   py → js : {"cmd":"model","path":...}                       → {"t":"model_ok"}
   py → js : {"cmd":"start","seed":N,"opponent":...,"netSeat":k,"mode":...,
              ...mode-specific knobs (temp / sims / tempMoves / noise)}
-  js → py : {"t":"end","winner":0|1|null,"turns":T,"steps":S,"n":K,
+  js → py : {"t":"end","winner":0..3|null,"turns":T,"steps":S,"n":K,
              "obs":<b64 f32[K*1328]>,"mask":<b64 u8[K*300]>,
              "actions":<b64 u16[K]>,"seats":<b64 u8[K]>,
              "policy":<b64 f32[K*300]>}        (policy only in 'mcts' mode)

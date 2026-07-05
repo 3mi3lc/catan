@@ -3,20 +3,20 @@ model.py — CatanNet: a small MLP for Catan policy + value estimation.
 
 Architecture
 ────────────
-Input  obs [batch, 1328]  — normalised game-state observation
+Input  obs [batch, 1603]  — normalised game-state observation (4-seat)
            (from encoding.ts encodeObservation, perspective of the acting player)
 
 Shared body:
-  Linear(1328 → 512) → LayerNorm → ReLU
+  Linear(1603 → 512) → LayerNorm → ReLU
   Linear(512  → 256) → LayerNorm → ReLU
   Linear(256  → 256) → ReLU
 
-Policy head:  Linear(256 → 300)  — raw logits; apply legal mask + softmax outside
-Value  net:   SEPARATE trunk Linear(1328 → 256) → LN → ReLU → Linear(256 → 256)
-              → ReLU → Linear(256 → 1) — raw scalar; NO Sigmoid (use .sigmoid()
-              at display time). Train with MSE against [0, 1] win/loss targets.
-              Kept separate from the policy body so critic gradients cannot
-              reshape the features under a BC-pretrained policy head.
+Policy head:  Linear(256 → 376)  — raw logits; apply legal mask + softmax outside
+Value  net:   SEPARATE trunk Linear(1603 → 256) → LN → ReLU → Linear(256 → 256)
+              → ReLU → Linear(256 → 4) — per-seat win logits, seat-relative
+              (slot 0 = acting seat); train with cross-entropy to the winner's
+              relative seat offset. Kept separate from the policy body so critic
+              gradients cannot reshape the features under a BC-pretrained head.
 
 Notes
 ─────
@@ -31,8 +31,9 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-OBS_SIZE = 1328
-ACT_SIZE = 300
+OBS_SIZE = 1659
+ACT_SIZE = 396
+N_SEATS  = 4   # value head width: per-seat win logits, seat-relative
 
 
 class CatanNet(nn.Module):
@@ -71,7 +72,7 @@ class CatanNet(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden, hidden),
             nn.ReLU(),
-            nn.Linear(hidden, 1),
+            nn.Linear(hidden, N_SEATS),
         )
 
     def forward(self, obs: torch.Tensor):
@@ -81,15 +82,16 @@ class CatanNet(nn.Module):
         Returns
         -------
         policy_logits : [batch, act_size]  — before softmax / masking
-        value         : [batch, 1]         — raw scalar; call .sigmoid() for P(win)
+        value         : [batch, N_SEATS]   — per-seat win logits, seat-relative
+                                             (slot 0 = acting seat); softmax for P
         """
         h = self.body(obs)
         return self.policy_head(h), self.value_net(obs)
 
     def win_prob(self, obs: torch.Tensor) -> torch.Tensor:
-        """Convenience method: returns P(win) ∈ (0, 1). Use for display/logging only."""
+        """P(the acting player wins) ∈ (0, 1). Display/logging only."""
         _, v = self(obs)
-        return v.sigmoid()
+        return v.softmax(dim=-1)[:, 0]
 
 
 def make_optimizer(

@@ -10,7 +10,8 @@ The loop per generation:
   3. Each recorded decision yields a training sample:
        policy target  = the MCTS visit distribution (an improvement on the
                         net's prior — search is the improvement operator)
-       value  target  = the game outcome for the acting seat (1 win / 0 loss)
+       value  target  = the winner's seat offset relative to the acting seat
+                        (0 = acting seat won) — cross-entropy over N_SEATS
   4. Train the net supervised on a replay buffer of recent generations
      (cross-entropy to visit distributions + BCE on outcomes).
   5. Evaluate: raw-net argmax vs greedy every generation (cheap); the search
@@ -94,11 +95,13 @@ def collect_generation(
     fast_sims: int,
     noise_eps: float,
     target_prune: float,
+    num_players: int,
 ):
     """Plays n_games of MCTS self-play; returns sample arrays + stats."""
     jobs = [{
         "seed": seed_offset + g,
         "opponent": "self",
+        "numPlayers": num_players,
         "netSeat": 0,
         "mode": "mcts",
         "sims": sims,
@@ -112,7 +115,14 @@ def collect_generation(
         "targetPrune": target_prune,
     } for g in range(n_games)]
 
-    games = pool.play_games(jobs)
+    t_start = time.time()
+
+    def progress(done: int, total: int) -> None:
+        if done % 25 == 0 or done == total:
+            print(f"    collecting {done}/{total} games  "
+                  f"({time.time() - t_start:.0f}s)", flush=True)
+
+    games = pool.play_games(jobs, on_progress=progress)
 
     obs_l, mask_l, pol_l, val_l = [], [], [], []
     unfinished = 0
@@ -121,7 +131,11 @@ def collect_generation(
         if traj.winner is None or traj.policy is None or len(traj.actions) == 0:
             unfinished += 1
             continue
-        outcome = (traj.seats == traj.winner).astype(np.float32)
+        # Value target: relative turn offset of the winner from each acting seat
+        # (0 = the acting seat won). Cast to int before the modulo so uint8
+        # wraparound can't corrupt the class for num_players not dividing 256.
+        outcome = ((int(traj.winner) - traj.seats.astype(np.int64))
+                   % num_players).astype(np.int64)
         obs_l.append(traj.obs)
         mask_l.append(traj.mask)
         pol_l.append(traj.policy)
@@ -159,7 +173,7 @@ def train_generation(
             obs_t  = torch.from_numpy(obs[idx]).to(device)
             mask_t = torch.from_numpy(mask[idx].astype(np.float32)).to(device)
             pol_t  = torch.from_numpy(policy[idx]).to(device)
-            val_t  = torch.from_numpy(value[idx]).to(device)
+            val_t  = torch.from_numpy(value[idx]).to(device).long()  # seat-relative winner class
 
             logits, v = model(obs_t)
             masked = logits.masked_fill(mask_t == 0, float("-inf"))
@@ -168,7 +182,9 @@ def train_generation(
             pol_loss = -(torch.where(mask_t.bool(), pol_t * logp,
                                      torch.zeros_like(logp))
                          .sum(dim=-1).mean())
-            val_loss = F.binary_cross_entropy_with_logits(v.squeeze(-1), val_t)
+            # Value: per-seat win-prob softmax, cross-entropy to the winner's
+            # relative seat offset (v is [B, N_SEATS]).
+            val_loss = F.cross_entropy(v, val_t)
 
             loss = pol_loss + value_coef * val_loss
             optimiser.zero_grad(set_to_none=True)
@@ -195,12 +211,14 @@ def eval_vs_greedy(
     sims: int = 96,
     value_mix: float = 0.25,
     rollout_cap: int = 600,
+    num_players: int = 4,
 ) -> float:
-    """Win rate vs greedy, alternating seats. mode='argmax' measures the raw
-    net; mode='mcts' (noise off, no temperature) measures net + search —
-    the deployed strength."""
+    """Win rate vs greedy, rotating the net's seat. mode='argmax' measures the
+    raw net; mode='mcts' (noise off, no temperature) measures net + search —
+    the deployed strength. In 4-player the no-skill baseline is ~25%."""
     jobs = [{
-        "seed": seed_base + g, "opponent": "greedy", "netSeat": g % 2,
+        "seed": seed_base + g, "opponent": "greedy",
+        "numPlayers": num_players, "netSeat": g % num_players,
         "mode": mode,
         **({"sims": sims, "tempMoves": 0, "noise": False,
             "valueMix": value_mix, "rolloutCap": rollout_cap}
@@ -259,9 +277,9 @@ def train(args: argparse.Namespace) -> None:
     try:
         export_rollout_onnx(model, rollout_onnx)
         pool.set_model(rollout_onnx)
-        wr0 = eval_vs_greedy(pool, args.eval_games)
+        wr0 = eval_vs_greedy(pool, args.eval_games, num_players=args.players)
         print(f"Baseline raw-net eval vs greedy "
-              f"(argmax, {args.eval_games} games): {wr0 * 100:.1f}%")
+              f"({args.players}p argmax, {args.eval_games} games): {wr0 * 100:.1f}%")
 
         print(f"\n{'Gen':>4}  {'games':>6}  {'samples':>8}  {'buffer':>9}  "
               f"{'pol':>7}  {'val':>7}  {'net%':>6}  {'collect_s':>9}  {'train_s':>8}")
@@ -279,6 +297,7 @@ def train(args: argparse.Namespace) -> None:
                 value_mix=mix, rollout_cap=args.rollout_cap,
                 full_prob=args.full_search_prob, fast_sims=args.fast_sims,
                 noise_eps=args.noise_eps, target_prune=args.target_prune,
+                num_players=args.players,
             )
             t_collect = time.time() - t0
             buffer.add_block(obs, mask, pol, val)
@@ -295,7 +314,7 @@ def train(args: argparse.Namespace) -> None:
             # 5: raw-net eval (cheap; search strength sits above this).
             export_rollout_onnx(model, rollout_onnx)
             pool.set_model(rollout_onnx)
-            wr = eval_vs_greedy(pool, args.eval_games)
+            wr = eval_vs_greedy(pool, args.eval_games, num_players=args.players)
 
             print(f"{gen:4d}  {args.games_per_gen:6d}  {len(obs):8,d}  "
                   f"{buffer.size:9,d}  {stats['pol']:7.4f}  {stats['val']:7.4f}  "
@@ -310,7 +329,8 @@ def train(args: argparse.Namespace) -> None:
                 wrs = eval_vs_greedy(pool, args.search_eval_games,
                                      mode="mcts", sims=args.sims,
                                      value_mix=mix,
-                                     rollout_cap=args.rollout_cap)
+                                     rollout_cap=args.rollout_cap,
+                                     num_players=args.players)
                 print(f"  -> net+MCTS({args.sims}) vs greedy "
                       f"({args.search_eval_games} games): {wrs * 100:.1f}%")
 
@@ -332,7 +352,9 @@ if __name__ == "__main__":
                    help="Must match the architecture of the checkpoint being "
                         "loaded (BC warm-start or resume)")
 
-    p.add_argument("--generations",   type=int, default=200)
+    p.add_argument("--players",       type=int, default=4, choices=[2, 3, 4],
+                   help="Seats per self-play game (4 = the target environment)")
+    p.add_argument("--generations",   type=int, default=500)
     p.add_argument("--games-per-gen", type=int, default=256,
                    help="MCTS self-play games per generation")
     p.add_argument("--sims",          type=int, default=96,
