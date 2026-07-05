@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+.git
+.claude
+.venv
+packages/training/__pycache__
+**/__pycache__
+*.pyc
+replays/
+data/
+packages/training/topology.json

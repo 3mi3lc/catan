@@ -12,17 +12,17 @@
  *   {"cmd":"model","path":"<abs path to .onnx>"}
  *       (Re)load the policy. Sent once per training iteration. Worker replies
  *       {"t":"model_ok"}.
- *   {"cmd":"start","seed":123,"opponent":"self"|"greedy","netSeat":0,"mode":"sample"|"argmax"}
- *       Play one game. With "self" both seats are net-controlled; with
- *       "greedy" only `netSeat` is, the other seat plays the frozen greedy
- *       heuristic. "sample" draws from the masked softmax (training);
- *       "argmax" is deterministic (eval).
+ *   {"cmd":"start","seed":123,"opponent":"self"|"greedy","numPlayers":4,"netSeat":0,"mode":"sample"|"argmax"}
+ *       Play one game (numPlayers seats, 2–4, default 4). With "self" all seats
+ *       are net-controlled; with "greedy" only `netSeat` is, the others play the
+ *       frozen greedy heuristic. "sample" draws from the masked softmax
+ *       (training); "argmax" is deterministic (eval).
  *   {"cmd":"stop"}
  *       Exit cleanly.
  *
  * Protocol (worker → Python), one message per finished game:
- *   {"t":"end","winner":0|1|null,"turns":T,"steps":S,"n":K,
- *    "obs":"<b64 f32[K*1328]>","mask":"<b64 u8[K*300]>",
+ *   {"t":"end","winner":0..3|null,"turns":T,"steps":S,"n":K,
+ *    "obs":"<b64 f32[K*1603]>","mask":"<b64 u8[K*376]>",
  *    "actions":"<b64 u16[K]>","seats":"<b64 u8[K]>"}
  *       K = number of recorded net decisions. Python recomputes log-probs and
  *       values for these in one batched torch pass (same weights → identical
@@ -40,18 +40,21 @@ import {
     type GameState, type Action, type PlayerId, type PlayerColor,
 } from '@catan/core';
 import {
-    buildBoardIndex, encodeObservation, legalMask, indexToAction, ACT_SIZE,
+    buildBoardIndex, encodeObservation, legalMask, indexToAction, ACT_SIZE, MAX_SEATS,
     type BoardIndex,
 } from '../src/encoding';
 import { discardAction } from '../src/heuristics';
 import { greedyPolicy } from '../src/greedy-policy';
 import { searchPolicy } from '../src/search-policy';
-import { runMcts, pickFromVisits, type NetEvaluator } from '../src/mcts';
+import { runMcts, pickFromVisits, decisionActor, type NetEvaluator } from '../src/mcts';
 import type { Policy } from '../src/policy';
 import type { GameState as GS, PlayerId as PID } from '@catan/core';
 
-const COLORS: PlayerColor[] = ['red', 'blue'];
-const MAX_STEPS = 6000;
+const COLORS: PlayerColor[] = ['red', 'blue', 'white', 'orange'];
+// Trade-enabled games have many more decision steps; a hard cap bounds the
+// pathological tail (a few games stuck in long negotiations dominate a
+// generation's wall-clock). Over-cap games are discarded as unfinished.
+const MAX_STEPS = 2500;
 
 function mkRng(seed: number) {
     let s = (seed >>> 0) || 1;
@@ -138,6 +141,7 @@ interface StartCmd {
      *            raw argmax — for checkpoint-ladder evals
      */
     opponent: 'self' | 'greedy' | 'search' | 'net2';
+    numPlayers?: number;         // seats in the game (2–4), default 4
     netSeat?: number;            // which seat the net controls vs an opponent
     searchK?: number;            // 'search': rollouts per candidate, default 10
     searchCap?: number;          // 'search': rollout ply cap, default 1200
@@ -192,7 +196,7 @@ function makeEvaluator(session: ort.InferenceSession, bi: BoardIndex): NetEvalua
             const tensor = new ort.Tensor('float32', obs, [1, obs.length]);
             const out    = await session.run({ obs: tensor });
             const logits = out['policy_logits'].data as Float32Array;
-            const rawVal = (out['value'].data as Float32Array)[0];
+            const rawVal = out['value'].data as Float32Array; // length MAX_SEATS (seat-relative logits)
 
             // Masked softmax → priors.
             let max = -Infinity;
@@ -206,7 +210,15 @@ function makeEvaluator(session: ort.InferenceSession, bi: BoardIndex): NetEvalua
             }
             if (sum > 0) for (let i = 0; i < ACT_SIZE; i++) priors[i] /= sum;
 
-            return { priors, winProb: 1 / (1 + Math.exp(-rawVal)) };
+            // Softmax the per-seat value logits → win-prob vector (relative to player).
+            const winProbs = new Float32Array(MAX_SEATS);
+            let vmax = -Infinity;
+            for (let i = 0; i < MAX_SEATS; i++) if (rawVal[i] > vmax) vmax = rawVal[i];
+            let vsum = 0;
+            for (let i = 0; i < MAX_SEATS; i++) { winProbs[i] = Math.exp(rawVal[i] - vmax); vsum += winProbs[i]; }
+            if (vsum > 0) for (let i = 0; i < MAX_SEATS; i++) winProbs[i] /= vsum;
+
+            return { priors, winProbs };
         },
     };
 }
@@ -218,7 +230,9 @@ async function playGame(
     session2: ort.InferenceSession | null,
 ): Promise<void> {
     const board = generateBoard(mkRng(cmd.seed));
-    const seats = COLORS.map((c, i) => ({ id: `p${i}` as PlayerId, name: c, color: c }));
+    const numPlayers = Math.min(MAX_SEATS, Math.max(2, cmd.numPlayers ?? MAX_SEATS));
+    const seats = COLORS.slice(0, numPlayers)
+        .map((c, i) => ({ id: `p${i}` as PlayerId, name: c, color: c }));
     let state = initialGameState(board, seats, cmd.seed);
 
     // Opponent for the non-net seat (sync policies; 'net2' handled inline).
@@ -248,15 +262,13 @@ async function playGame(
     const recAct:  number[]       = [];
     const recSeat: number[]       = [];
     const recPol:  Float32Array[] = [];     // mcts visit distributions
-    const decisionCount = [0, 0];           // per-seat, for temperature schedule
+    const decisionCount = Array(numPlayers).fill(0); // per-seat, for temperature schedule
 
     let steps = 0;
     let turns = 0;
 
     for (; steps < MAX_STEPS && !state.winner; steps++) {
-        const actor: PlayerId = state.phase === 'discard'
-            ? (Object.keys(state.pendingDiscards)[0] as PlayerId)
-            : state.currentPlayer;
+        const actor: PlayerId = decisionActor(state);
         const seat = state.turnOrder.indexOf(actor);
 
         let action: Action;

@@ -6,18 +6,20 @@
  * can read directly as numpy arrays.
  *
  * Usage:
- *   pnpm --filter @catan/ai collect [games] [out_dir] [seed_base]
- *   pnpm --filter @catan/ai collect 10000 data/greedy 1
+ *   pnpm --filter @catan/ai collect [games] [out_dir] [seed_base] [players]
+ *   pnpm --filter @catan/ai collect 10000 data/greedy4 1 4
  *
- * Binary shard format (.bin):
- *   bytes  0-3   : uint32 magic = 0x4E415443  ('CTAN' little-endian)
+ * Binary shard format (.bin), v2 (4-seat):
+ *   bytes  0-3   : uint32 magic = 0x34415443  ('CTA4' little-endian)
  *   bytes  4-7   : uint32 num_samples
- *   bytes  8-11  : uint32 obs_size  (1328)
- *   bytes 12-15  : uint32 act_size  (300)
+ *   bytes  8-11  : uint32 obs_size  (1603)
+ *   bytes 12-15  : uint32 act_size  (376)
  *   bytes 16 onward, three contiguous blocks:
  *     float32[num_samples × obs_size]  — observations
  *     uint16[num_samples]              — action indices
- *     uint8[num_samples]               — outcomes (1 = winner, 0 = loser)
+ *     uint8[num_samples]               — outcomes: seat-relative winner offset
+ *                                        (0 = the acting player won, k = the
+ *                                         player k seats later in turn order won)
  *
  * Python reads these with numpy.frombuffer; see packages/training/dataset.py.
  */
@@ -34,17 +36,19 @@ import {
 } from '../src/encoding';
 import { discardAction } from '../src/heuristics';
 import { greedyPolicy } from '../src/greedy-policy';
+import { decisionActor } from '../src/mcts';
 import type { Policy } from '../src/policy';
 
 // ── CLI args ──────────────────────────────────────────────────────────────────
 const GAMES      = Number(process.argv[2] ?? 5_000);
 const OUT_DIR    = process.argv[3] ?? 'data/greedy';
 const SEED_BASE  = Number(process.argv[4] ?? 1);
-const SHARD_SIZE = 10_000; // samples per file (~53 MB each)
+const PLAYERS    = Math.min(4, Math.max(2, Number(process.argv[5] ?? 4)));
+const SHARD_SIZE = 10_000; // samples per file
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const COLORS: PlayerColor[] = ['red', 'blue', 'white', 'orange'];
-const MAGIC = 0x4E415443;
+const MAGIC = 0x34415443; // 'CTA4' — v2 4-seat shards (distinct from 2p 'CTAN')
 
 function mkRng(seed: number) {
     let s = (seed >>> 0) || 1;
@@ -64,7 +68,7 @@ function collectGame(
     seed: number,
     policies: Policy[],
     bi: BoardIndex,
-): { steps: RawStep[]; winner: PlayerId | null } {
+): { steps: RawStep[]; winner: PlayerId | null; turnOrder: PlayerId[] } {
     const n = policies.length;
     const board = generateBoard(mkRng(seed));
     const seats = COLORS.slice(0, n).map((c, i) => ({ id: `p${i}` as PlayerId, name: c, color: c }));
@@ -73,9 +77,7 @@ function collectGame(
     const steps: RawStep[] = [];
 
     for (let t = 0; t < 6000 && !state.winner; t++) {
-        const actor: PlayerId = state.phase === 'discard'
-            ? (Object.keys(state.pendingDiscards)[0] as PlayerId)
-            : state.currentPlayer;
+        const actor: PlayerId = decisionActor(state);
 
         let action;
 
@@ -95,7 +97,7 @@ function collectGame(
         state = res.state;
     }
 
-    return { steps, winner: state.winner };
+    return { steps, winner: state.winner, turnOrder: state.turnOrder };
 }
 
 // ── Shard writer ──────────────────────────────────────────────────────────────
@@ -135,7 +137,7 @@ mkdirSync(OUT_DIR, { recursive: true });
 const firstBoard = generateBoard(mkRng(SEED_BASE));
 const BI         = buildBoardIndex(firstBoard);
 
-const policies: Policy[] = [greedyPolicy(), greedyPolicy()];
+const policies: Policy[] = Array.from({ length: PLAYERS }, () => greedyPolicy());
 
 // Pre-allocate shard buffers (reused across flushes).
 const shardObs = new Float32Array(SHARD_SIZE * OBS_SIZE);
@@ -147,7 +149,7 @@ let shardIdx    = 0;  // shard file index
 let totalSamples = 0;
 let totalGames   = 0;
 let skipped      = 0; // games that hit the step cap
-let p0wins = 0, p1wins = 0;
+const seatWins   = new Array(PLAYERS).fill(0);
 
 function flushShard() {
     const path = join(OUT_DIR, `shard_${String(shardIdx).padStart(5, '0')}.bin`);
@@ -161,14 +163,17 @@ const t0 = Date.now();
 
 for (let g = 0; g < GAMES; g++) {
     const seed = SEED_BASE + g;
-    const { steps, winner } = collectGame(seed, policies, BI);
+    const { steps, winner, turnOrder } = collectGame(seed, policies, BI);
 
     if (!winner) { skipped++; continue; }
-    if (winner === 'p0') p0wins++; else p1wins++;
+    const n = turnOrder.length;
+    const wi = turnOrder.indexOf(winner);
+    seatWins[wi]++;
 
-    // Pack steps into shard buffers, flushing when full.
+    // Pack steps into shard buffers, flushing when full. Outcome = seat-relative
+    // offset of the winner from the acting player (0 = acting player won).
     for (const s of steps) {
-        const outcome: 0 | 1 = s.player === winner ? 1 : 0;
+        const outcome = ((wi - turnOrder.indexOf(s.player)) + n) % n;
         const i = shardCount;
 
         shardObs.set(s.obs, i * OBS_SIZE);
@@ -184,7 +189,7 @@ for (let g = 0; g < GAMES; g++) {
 
     if ((g + 1) % 1000 === 0 || g === GAMES - 1) {
         const sec = ((Date.now() - t0) / 1000).toFixed(1);
-        const bias = totalGames > 0 ? ((p0wins / totalGames) * 100).toFixed(1) : '?';
+        const bias = totalGames > 0 ? ((seatWins[0] / totalGames) * 100).toFixed(1) : '?';
         console.log(
             `[${(g + 1).toLocaleString()}/${GAMES.toLocaleString()}] ` +
             `games=${totalGames.toLocaleString()} samples=${totalSamples.toLocaleString()} ` +
@@ -207,7 +212,7 @@ console.log([
     `  shards:       ${shardIdx}  (${SHARD_SIZE.toLocaleString()} samples each, ~${(SHARD_SIZE * (OBS_SIZE * 4 + 3) / 1e6).toFixed(0)} MB)`,
     `  obs_size:     ${OBS_SIZE}`,
     `  act_size:     ${ACT_SIZE}`,
-    `  seat balance: p0=${p0wins} p1=${p1wins} (should be ~50/50)`,
+    `  seat balance: ${seatWins.map((w, i) => `p${i}=${w}`).join(' ')} (should be ~even)`,
     `  output:       ${OUT_DIR}/`,
     '',
     '  Next step:',

@@ -30,6 +30,7 @@ export function initialGameState(
     board: Board,
     seeds: PlayerSeed[],
     seed: number = (Math.random() * 0x1_0000_0000) >>> 0,
+    maxOffersPerTurn: number = 1,
 ): GameState {
     if (seeds.length < 2) throw new Error('Need at least two players');
 
@@ -88,6 +89,9 @@ export function initialGameState(
         setup: { placed: 0, lastSettlement: null },
         devCardPlayedThisTurn: false,
         pendingDiscards: {},
-        pendingTrade: null,
+        negotiation: null,
+        draftOffer: null,
+        tradesThisTurn: 0,
+        maxOffersPerTurn,
     };
 }

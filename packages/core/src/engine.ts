@@ -1,4 +1,4 @@
-import { GameState, Player, VICTORY_POINTS_TO_WIN } from './state';
+import { GameState, Player, Negotiation, TradeReply, VICTORY_POINTS_TO_WIN } from './state';
 import { PlayerId, TileId, VertexId, EdgeId } from './ids';
 import { Resource, RESOURCES } from './board';
 import { Action, Move, GameEvent, ResourceBundle } from './actions';
@@ -119,8 +119,16 @@ export function applyMove(state: GameState, move: Move): ApplyResult {
     case 'moveRobber':       return moveRobber(state, move.player, action);
     case 'discard':          return discard(state, move.player, action);
     case 'bankTrade':        return bankTrade(state, move.player, action);
-    case 'proposeTrade':     return proposeTrade(state, move.player, action);
-    case 'respondToTrade':   return respondToTrade(state, move.player, action);
+    case 'offerAddGive':     return offerAdd(state, move.player, 'give', action.resource);
+    case 'offerAddWant':     return offerAdd(state, move.player, 'want', action.resource);
+    case 'offerBroadcast':   return offerBroadcast(state, move.player);
+    case 'offerCancel':      return offerCancel(state, move.player);
+    case 'respondAccept':    return respond(state, move.player, 'accept');
+    case 'respondReject':    return respond(state, move.player, 'reject');
+    case 'counterStart':     return counterStart(state, move.player);
+    case 'submitCounter':    return submitCounter(state, move.player);
+    case 'confirmTrade':     return confirmTrade(state, move.player, action.to);
+    case 'declineAll':       return declineAll(state, move.player);
     case 'endTurn':          return endTurn(state, move.player);
     default:                 return assertNever(action);
   }
@@ -227,7 +235,8 @@ function buildRoad(state: GameState, player: PlayerId, edge: EdgeId): ApplyResul
       // Setup complete — first player begins the first real turn.
       return ok({
         ...state, players, roads, setup: null,
-        phase: 'roll', currentPlayer: state.turnOrder[0], devCardPlayedThisTurn: false,
+        phase: 'roll', currentPlayer: state.turnOrder[0],
+        devCardPlayedThisTurn: false, tradesThisTurn: 0,
       }, [{ type: 'built', player, what: 'road' }]);
     }
     return ok({
@@ -443,36 +452,139 @@ function bankTrade(state: GameState, player: PlayerId, a: Extract<Action, { type
   return ok({ ...state, players: withPlayer(state, player, { resources }), bank });
 }
 
-function proposeTrade(state: GameState, player: PlayerId, a: Extract<Action, { type: 'proposeTrade' }>): ApplyResult {
-  if (state.currentPlayer !== player) return err('Only the active player can propose a trade');
-  if (state.phase !== 'main') return err('You cannot trade now');
-  if (bundleTotal(a.give) === 0 || bundleTotal(a.want) === 0) return err('A trade needs something on both sides');
-  if (!canAfford(state.players[player].resources, a.give)) return err('You do not have what you are offering');
+// ── Player-to-player trade negotiation ──────────────────────────────────────
+// The active player composes an offer (offerAdd…) and broadcasts it; each
+// opponent accepts / rejects / counters; the proposer then confirms with one of
+// them or declines. Counters are single-level. See Negotiation in state.ts.
 
-  return ok({ ...state, pendingTrade: { id: `offer:${player}`, from: player, to: a.to, give: a.give, want: a.want } });
+const GIVE_CAP = 5;              // max TOTAL cards offered in one trade (give side)
+const WANT_CAP = 3;             // max TOTAL cards requested in one trade (want side)
+                                // — total caps bound how many compose steps an
+                                //   offer can take, which keeps games short.
+                                // (Per-turn offer count is bounded by
+                                //  state.maxOffersPerTurn — see GameState.)
+
+// Add one card to the give/want side of the active draft (the proposer's initial
+// offer when no negotiation is open, otherwise a responding opponent's counter).
+function offerAdd(
+  state: GameState, player: PlayerId, side: 'give' | 'want', resource: Resource,
+): ApplyResult {
+  if (state.phase !== 'main') return err('You cannot trade now');
+  const draft = state.draftOffer;
+
+  if (!draft) {
+    // Start the proposer's initial offer (opponents counter via counterStart).
+    if (state.negotiation) return err('Make a counter-offer instead');
+    if (state.currentPlayer !== player) return err('Not your turn');
+    if (side !== 'give') return err('Start an offer with a card to give');
+    if (state.tradesThisTurn >= state.maxOffersPerTurn) return err('No more offers this turn');
+    if ((state.players[player].resources[resource] ?? 0) < 1) return err('You have none of that');
+    return ok({ ...state, draftOffer: { by: player, give: { [resource]: 1 }, want: {} } });
+  }
+
+  if (draft.by !== player) return err('Not your draft');
+  const cur = draft[side];
+  const next = (cur[resource] ?? 0) + 1;
+  if (side === 'give') {
+    if (next > (state.players[player].resources[resource] ?? 0)) return err('You do not have that many to give');
+    if (bundleTotal(draft.give) >= GIVE_CAP) return err('That offer is already large enough');
+  }
+  if (side === 'want' && bundleTotal(draft.want) >= WANT_CAP) return err('That is more than you can request');
+  return ok({ ...state, draftOffer: { ...draft, [side]: { ...cur, [resource]: next } } });
 }
 
-function respondToTrade(
-    state: GameState, player: PlayerId, a: Extract<Action, { type: 'respondToTrade' }>,
-): ApplyResult {
-  const offer = state.pendingTrade;
-  if (!offer || offer.id !== a.tradeId) return err('No such trade offer');
-  if (player === offer.from) return err('You cannot respond to your own offer');
-  if (offer.to !== 'all' && offer.to !== player) return err('That offer is not addressed to you');
+// Finalise the proposer's draft and broadcast it to every opponent.
+function offerBroadcast(state: GameState, player: PlayerId): ApplyResult {
+  const draft = state.draftOffer;
+  if (!draft || draft.by !== player) return err('No offer to broadcast');
+  if (state.currentPlayer !== player || state.negotiation) return err('Cannot broadcast now');
+  if (bundleTotal(draft.give) === 0 || bundleTotal(draft.want) === 0)
+    return err('An offer needs something on both sides');
+  const responses: Record<PlayerId, TradeReply> = {};
+  for (const p of state.turnOrder) if (p !== player) responses[p] = 'pending';
+  return ok({
+    ...state, draftOffer: null, tradesThisTurn: state.tradesThisTurn + 1,
+    negotiation: { proposer: player, give: draft.give, want: draft.want, responses, counters: {}, stage: 'responding' },
+  });
+}
 
-  if (!a.accept) return ok({ ...state, pendingTrade: null });
+// Abandon the current draft. A counterer reverts to still-pending.
+function offerCancel(state: GameState, player: PlayerId): ApplyResult {
+  const draft = state.draftOffer;
+  if (!draft || draft.by !== player) return err('No offer to cancel');
+  return ok({ ...state, draftOffer: null });
+}
 
-  const from = state.players[offer.from];
-  const to = state.players[player];
-  if (!canAfford(from.resources, offer.give)) return err('The proposer can no longer cover the offer');
-  if (!canAfford(to.resources, offer.want)) return err('You cannot cover the requested resources');
+// Move to arbitration once every opponent has replied to the broadcast.
+function advanceNegotiation(state: GameState, neg: Negotiation): GameState {
+  const allIn = state.turnOrder.every((p) => p === neg.proposer || neg.responses[p] !== 'pending');
+  return { ...state, negotiation: { ...neg, stage: allIn ? 'arbitrating' : 'responding' } };
+}
+
+// An opponent accepts or rejects the broadcast offer.
+function respond(state: GameState, player: PlayerId, reply: 'accept' | 'reject'): ApplyResult {
+  const neg = state.negotiation;
+  if (!neg || neg.stage !== 'responding') return err('No offer to respond to');
+  if (state.draftOffer) return err('Finish your counter first');
+  if (neg.responses[player] !== 'pending') return err('That offer is not awaiting you');
+  if (reply === 'accept' && !canAfford(state.players[player].resources, neg.want))
+    return err('You cannot cover the requested resources');
+  return ok(advanceNegotiation(state, { ...neg, responses: { ...neg.responses, [player]: reply } }));
+}
+
+// An opponent begins composing a counter-offer (built up via offerAdd).
+function counterStart(state: GameState, player: PlayerId): ApplyResult {
+  const neg = state.negotiation;
+  if (!neg || neg.stage !== 'responding') return err('No offer to counter');
+  if (state.draftOffer) return err('Already composing');
+  if (neg.responses[player] !== 'pending') return err('That offer is not awaiting you');
+  return ok({ ...state, draftOffer: { by: player, give: {}, want: {} } });
+}
+
+// An opponent submits their composed counter terms.
+function submitCounter(state: GameState, player: PlayerId): ApplyResult {
+  const neg = state.negotiation;
+  const draft = state.draftOffer;
+  if (!neg || neg.stage !== 'responding' || !draft || draft.by !== player)
+    return err('No counter to submit');
+  if (bundleTotal(draft.give) === 0 || bundleTotal(draft.want) === 0)
+    return err('A counter needs something on both sides');
+  const responses = { ...neg.responses, [player]: 'counter' as TradeReply };
+  const counters = { ...neg.counters, [player]: { give: draft.give, want: draft.want } };
+  return ok(advanceNegotiation({ ...state, draftOffer: null }, { ...neg, responses, counters }));
+}
+
+// The proposer executes the trade with one accepter or counterer.
+function confirmTrade(state: GameState, player: PlayerId, to: PlayerId): ApplyResult {
+  const neg = state.negotiation;
+  if (!neg || neg.stage !== 'arbitrating' || player !== neg.proposer) return err('Not arbitrating');
+  const reply = neg.responses[to];
+  if (reply !== 'accept' && reply !== 'counter') return err('That player is not available');
+
+  // Accept → the broadcast terms apply. Counter → that opponent's terms apply
+  // (they give `give`, want `want`), so the proposer gives `want`, gets `give`.
+  const [pGives, pGets] = reply === 'accept'
+    ? [neg.give, neg.want]
+    : [neg.counters[to].want, neg.counters[to].give];
+  const prop = state.players[player];
+  const other = state.players[to];
+  if (!canAfford(prop.resources, pGives)) return err('You can no longer cover that');
+  if (!canAfford(other.resources, pGets)) return err('They can no longer cover that');
 
   const players = {
     ...state.players,
-    [offer.from]: { ...from, resources: applyBundle(applyBundle(from.resources, offer.give, -1), offer.want, +1) },
-    [player]: { ...to, resources: applyBundle(applyBundle(to.resources, offer.want, -1), offer.give, +1) },
+    [player]: { ...prop, resources: applyBundle(applyBundle(prop.resources, pGives, -1), pGets, +1) },
+    [to]: { ...other, resources: applyBundle(applyBundle(other.resources, pGets, -1), pGives, +1) },
   };
-  return ok({ ...state, players, pendingTrade: null }, [{ type: 'tradeExecuted', between: [offer.from, player] }]);
+  return ok({ ...state, players, negotiation: null, draftOffer: null },
+    [{ type: 'tradeExecuted', between: [player, to], proposerGives: pGives, proposerGets: pGets }]);
+}
+
+// The proposer ends the negotiation without trading.
+function declineAll(state: GameState, player: PlayerId): ApplyResult {
+  const neg = state.negotiation;
+  if (!neg || neg.stage !== 'arbitrating' || player !== neg.proposer) return err('Not arbitrating');
+  return ok({ ...state, negotiation: null });
 }
 
 function endTurn(state: GameState, player: PlayerId): ApplyResult {
@@ -490,7 +602,9 @@ function endTurn(state: GameState, player: PlayerId): ApplyResult {
     phase: 'roll',
     dice: null,
     devCardPlayedThisTurn: false,
-    pendingTrade: null,
+    tradesThisTurn: 0,
+    negotiation: null,
+    draftOffer: null,
   });
 }
 
@@ -554,10 +668,12 @@ function devCardActions(state: GameState, player: PlayerId): Action[] {
 }
 
 // =========================================================================
-// legalActions — enumeration for UI buttons and simple/learned AIs. Covers
-// every move except player-to-player trade negotiation (an unbounded space of
-// offers, better handled outside a flat action list). The discard step is
-// driven by the UI rather than enumerated.
+// legalActions — enumeration for UI buttons and simple/learned AIs. Player-to-
+// player trades are a full negotiation: the active player composes a bundle
+// (offerAddGive/Want) and broadcasts it; opponents accept/reject/counter; the
+// proposer confirms with one or declines. These steps can belong to a player
+// other than currentPlayer (off-turn), so they precede the phase enumeration.
+// The discard step is UI-driven.
 // =========================================================================
 
 export function legalActions(state: GameState, player: PlayerId): Action[] {
@@ -565,6 +681,47 @@ export function legalActions(state: GameState, player: PlayerId): Action[] {
   const board = state.board;
 
   if (state.phase === 'gameOver' || state.phase === 'discard') return acts;
+
+  // Composing an offer/counter: only the composer may act, building it up then
+  // broadcasting (initial) or submitting (counter), or cancelling.
+  if (state.draftOffer) {
+    const draft = state.draftOffer;
+    if (draft.by !== player) return acts;
+    const have = state.players[player].resources;
+    const giveFull = bundleTotal(draft.give) >= GIVE_CAP;
+    const wantFull = bundleTotal(draft.want) >= WANT_CAP;
+    for (const r of Object.keys(have) as Resource[]) {
+      if (!giveFull && (draft.give[r] ?? 0) < (have[r] ?? 0)) acts.push({ type: 'offerAddGive', resource: r });
+      if (!wantFull) acts.push({ type: 'offerAddWant', resource: r });
+    }
+    if (bundleTotal(draft.give) > 0 && bundleTotal(draft.want) > 0)
+      acts.push(state.negotiation ? { type: 'submitCounter' } : { type: 'offerBroadcast' });
+    acts.push({ type: 'offerCancel' });
+    return acts;
+  }
+
+  // An offer is on the table: opponents reply, then the proposer arbitrates.
+  if (state.negotiation) {
+    const neg = state.negotiation;
+    if (neg.stage === 'responding') {
+      if (neg.responses[player] !== 'pending') return acts;     // already replied / not involved
+      acts.push({ type: 'respondReject' });
+      if (canAfford(state.players[player].resources, neg.want)) acts.push({ type: 'respondAccept' });
+      acts.push({ type: 'counterStart' });
+      return acts;
+    }
+    if (player !== neg.proposer) return acts;                   // arbitrating: proposer only
+    for (const to of state.turnOrder) {
+      const r = neg.responses[to];
+      if (r !== 'accept' && r !== 'counter') continue;
+      const pGives = r === 'accept' ? neg.give : neg.counters[to].want;
+      const pGets  = r === 'accept' ? neg.want : neg.counters[to].give;
+      if (canAfford(state.players[player].resources, pGives) && canAfford(state.players[to].resources, pGets))
+        acts.push({ type: 'confirmTrade', to });
+    }
+    acts.push({ type: 'declineAll' });
+    return acts;
+  }
 
   if (state.phase === 'setupSettlement') {
     if (state.currentPlayer !== player) return acts;
@@ -599,9 +756,10 @@ export function legalActions(state: GameState, player: PlayerId): Action[] {
     return acts;
   }
 
-  // main
+  // main (draft/negotiation already handled at the top of legalActions)
   if (state.currentPlayer !== player) return acts;
   const me = state.players[player];
+  const resources = Object.keys(me.resources) as Resource[];
 
   if (canAfford(me.resources, COSTS.road) && me.supply.roads > 0)
     for (const e of Object.keys(board.edges) as EdgeId[])
@@ -620,13 +778,18 @@ export function legalActions(state: GameState, player: PlayerId): Action[] {
 
   if (canAfford(me.resources, COSTS.devCard) && state.devDeck.length > 0) acts.push({ type: 'buyDevCard' });
 
-  const resources = Object.keys(me.resources) as Resource[];
   for (const give of resources) {
     const ratio = tradeRatio(state, player, give);
     if (me.resources[give] >= ratio)
       for (const receive of resources)
         if (receive !== give && state.bank[receive] > 0) acts.push({ type: 'bankTrade', give, giveCount: ratio, receive });
   }
+
+  // Start a player-to-player offer by adding the first card you will give; the
+  // draft is then built up incrementally and broadcast. Up to a few per turn.
+  if (state.tradesThisTurn < state.maxOffersPerTurn)
+    for (const r of resources)
+      if (me.resources[r] >= 1) acts.push({ type: 'offerAddGive', resource: r });
 
   acts.push(...devCardActions(state, player));
   acts.push({ type: 'endTurn' });

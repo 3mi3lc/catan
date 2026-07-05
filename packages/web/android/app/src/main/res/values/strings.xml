@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Catan Online</string>
+    <string name="title_activity_main">Catan Online</string>
+    <string name="package_name">com.catan.online</string>
+    <string name="custom_url_scheme">com.catan.online</string>
+</resources>

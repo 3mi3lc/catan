@@ -238,7 +238,9 @@ describe('matchup benchmarks', () => {
     expect(stats.trackedWinRate).toBeGreaterThan(0.9);
     expect(stats.hitCap).toBeLessThan(20);
     expect(stats.avgWinnerVp).toBeLessThan(12);
-    expect(stats.avgEndHandSize).toBeLessThan(8);
+    // Greedy now makes card-neutral 1:1 player trades (vs the bank's card-shedding
+    // 4:1), so it ends holding ~1 more card than the pre-trade baseline (<8).
+    expect(stats.avgEndHandSize).toBeLessThan(10);
     expect(stats.vpSourcesPerGame.buildings).toBeGreaterThan(6);
   });
 

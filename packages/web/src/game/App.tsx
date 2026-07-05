@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   generateBoard, initialGameState, applyMove, legalActions,
@@ -11,6 +11,10 @@ import {
   RES_COLOR, RES_ABBR, PLAYER, SEAT_DEFS, TERRAIN,
   rngFromSeed, nameOf, colorOf, handSize,
 } from './theme';
+import {
+  preloadSfx, installClickSfx, playForEvents, playForAction,
+  isMuted, toggleMuted, getVolume, setVolume,
+} from '../audio/sound';
 
 type Mode =
     | { kind: 'normal' }
@@ -56,6 +60,11 @@ export default function App() {
   const [discardSel, setDiscardSel] = useState<Record<string, Partial<Record<Resource, number>>>>({});
   const [log, setLog] = useState<string[]>(['New game · seed 42 · 4 players']);
   const [toast, setToast] = useState<string | null>(null);
+  const [sfxMuted, setSfxMuted] = useState(isMuted());
+  const [sfxVolume, setSfxVolume] = useState(getVolume());
+
+  // Sound effects: load clips + arm the autoplay-policy unlock once on mount.
+  useEffect(() => { preloadSfx(); installClickSfx(); }, []);
 
   const cur = game.currentPlayer;
 
@@ -64,6 +73,8 @@ export default function App() {
   function apply(move: Move): void {
     const res = applyMove(game, move);
     if (!res.ok) { flash(res.error); return; }
+    playForEvents(res.events);
+    playForAction(move.action);
     const events = res.events.map((e) => describe(e, res.state));
     if (res.state.winner) events.push(`${nameOf(res.state, res.state.winner)} wins!`);
     setGame(res.state);
@@ -150,6 +161,7 @@ export default function App() {
     const resources = discardSel[p] ?? {};
     const res = applyMove(game, { player: p, action: { type: 'discard', resources } });
     if (!res.ok) { flash(res.error); return; }
+    playForAction({ type: 'discard', resources });
     setGame(res.state);
     setLog((prev) => [`${nameOf(game, p)} discarded ${owed}`, ...prev].slice(0, 50));
     setDiscardSel((s) => ({ ...s, [p]: {} }));
@@ -176,6 +188,12 @@ export default function App() {
               </select>
             </label>
             <button onClick={startNew}>New game</button>
+            <div className="sfx-control">
+              <button className="ghost" title="Mute sound effects"
+                      onClick={() => setSfxMuted(toggleMuted())}>{sfxMuted ? '🔇' : '🔊'}</button>
+              <input type="range" min={0} max={100} value={Math.round(sfxVolume * 100)} title="Sound volume"
+                     onChange={(e) => { const v = Number(e.target.value) / 100; setVolume(v); setSfxVolume(v); }} />
+            </div>
             <a className="link" href="/">board viewer →</a>
           </div>
         </header>

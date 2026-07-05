@@ -56,6 +56,9 @@ body {
 .newgame input { width: 76px; }
 .link { font-size: 12.5px; color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--line); }
 .link:hover { color: var(--accent); }
+.sfx-control { display: flex; align-items: center; gap: 7px; }
+.sfx-control button { padding: 6px 9px; font-size: 14px; line-height: 1; }
+.sfx-control input[type="range"] { width: 70px; accent-color: var(--accent); }
 
 /* ---- two-column layout — fills remaining height ---- */
 .layout {
@@ -174,6 +177,12 @@ button.respick.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
 .hit { cursor: pointer; }
 .pulse { animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+/* Outward ripple ring behind a legal-vertex dot — reads as an invitation to click. */
+.pulse-ring { transform-box: fill-box; transform-origin: center; animation: pulseRing 1.6s ease-out infinite; }
+@keyframes pulseRing { 0% { transform: scale(.7); opacity: .55; } 100% { transform: scale(1.7); opacity: 0; } }
+/* Flowing dash on legal-edge highlights — "marching ants" toward the player. */
+.marching { animation: marchingAnts .6s linear infinite; }
+@keyframes marchingAnts { to { stroke-dashoffset: -16; } }
 
 /* ---- player cards ---- */
 .pcard {

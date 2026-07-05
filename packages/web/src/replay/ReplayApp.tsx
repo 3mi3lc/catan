@@ -1,13 +1,27 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import Board from '../game/Board';
+import StatsPanel from './StatsPanel';
 import { PLAYER, RES_COLOR, RES_ABBR, colorOf } from '../game/theme';
 import '../game/styles.css';   // base layout, cards, buttons, h2, pcard, hand, etc.
 import './replay.css';          // replay-only additions
-import { loadReplay, type GameArchive, type Replay } from '@catan/ai';
 import {
+    loadReplay, type GameArchive, type Replay,
     RESOURCES, victoryPoints, longestRoadLength,
     type GameState, type PlayerId, type Resource, type Action,
 } from '@catan/core';
+import { SERVER_URL } from '../server-url';
+
+// A finished hotseat/online game hands its archive here via sessionStorage
+// (see hotseat.ts's storeArchiveForReplay / online.ts's `gameOver` handler) —
+// auto-loaded on mount, defaulting to the Stats view. Manual file loads (the
+// original AI-debug-archive flow) keep defaulting to the Replay view.
+const SESSION_ARCHIVE_KEY = 'catan-last-archive';
+
+// A "My games" link (online.ts) instead sends a `?game=<id>` URL — that game
+// is fetched from the server's GET /games/<id> (participant-only, session
+// cookie required) rather than read from sessionStorage, since it may be a
+// past game from an earlier browser session/device, not the one that just
+// finished in this tab.
 
 const POLICY_PALETTE = [PLAYER.red.fill, PLAYER.blue.fill, PLAYER.orange.fill, PLAYER.white.fill];
 
@@ -48,8 +62,16 @@ function describeAction(a: Action, resultState: GameState | null): string {
         case 'moveRobber':      return `moved the robber${a.stealFrom ? `, robbing ${a.stealFrom}` : ''}`;
         case 'discard':         return `discarded ${bundleStr(a.resources)}`;
         case 'bankTrade':       return `bank trade — ${a.giveCount}× ${RES_ABBR[a.give]} → ${RES_ABBR[a.receive]}`;
-        case 'proposeTrade':    return `proposed trade to ${a.to}`;
-        case 'respondToTrade':  return `${a.accept ? 'accepted' : 'declined'} trade`;
+        case 'offerAddGive':    return `added ${RES_ABBR[a.resource]} to an offer`;
+        case 'offerAddWant':    return `asked for ${RES_ABBR[a.resource]} in an offer`;
+        case 'offerBroadcast':  return 'broadcast a trade offer';
+        case 'offerCancel':     return 'cancelled an offer';
+        case 'respondAccept':   return 'accepted the offer';
+        case 'respondReject':   return 'declined the offer';
+        case 'counterStart':    return 'began a counter-offer';
+        case 'submitCounter':   return 'made a counter-offer';
+        case 'confirmTrade':    return `traded with ${a.to}`;
+        case 'declineAll':      return 'declined all offers';
         case 'endTurn':         return 'ended turn';
         default:                return (a as { type: string }).type;
     }
@@ -88,6 +110,28 @@ export default function ReplayApp() {
     const [error, setError]     = useState<string | null>(null);
     const [playing, setPlaying] = useState(false);
     const [speed, setSpeed]     = useState(300);
+    const [view, setView]       = useState<'stats' | 'replay'>('replay');
+
+    useEffect(() => {
+        const gameId = new URLSearchParams(location.search).get('game');
+        if (gameId) {
+            fetch(`${SERVER_URL}/games/${gameId}`, { credentials: 'include' })
+                .then((res) => {
+                    if (!res.ok) throw new Error(res.status === 401 ? 'Log in to view this game.' : 'Could not load this game — it may not exist, or you may not have played in it.');
+                    return res.json() as Promise<{ archive: GameArchive }>;
+                })
+                .then(({ archive: fetched }) => { setArchive(fetched); setIdx(0); setView('stats'); })
+                .catch((err) => setError(err instanceof Error ? err.message : 'Could not load this game.'));
+            return;
+        }
+        const saved = sessionStorage.getItem(SESSION_ARCHIVE_KEY);
+        if (!saved) return;
+        try {
+            setArchive(JSON.parse(saved) as GameArchive);
+            setIdx(0);
+            setView('stats');
+        } catch { /* stale/corrupt snapshot — ignore, fall back to the file picker */ }
+    }, []);
 
     const replay: Replay | null = useMemo(() => {
         if (!archive) return null;
@@ -114,7 +158,7 @@ export default function ReplayApp() {
             try {
                 const parsed = JSON.parse(t) as GameArchive;
                 if (Array.isArray(parsed)) { setError('Old snapshot format — re-run benchmark to get a new archive.'); return; }
-                setArchive(parsed); setIdx(0);
+                setArchive(parsed); setIdx(0); setView('replay');
             } catch { setError('Failed to parse JSON.'); }
         });
     }
@@ -181,6 +225,12 @@ export default function ReplayApp() {
                 )}
 
                 <div className="newgame" style={{ gap: 10 }}>
+                    {archive && (
+                        <div className="rp-view-toggle">
+                            <button className={view === 'stats' ? '' : 'ghost'} onClick={() => setView('stats')}>Stats</button>
+                            <button className={view === 'replay' ? '' : 'ghost'} onClick={() => setView('replay')}>Replay</button>
+                        </div>
+                    )}
                     {archive && <a className="link" href="/game.html">game →</a>}
                     <input type="file" accept=".json" onChange={loadFile} />
                 </div>
@@ -188,7 +238,14 @@ export default function ReplayApp() {
 
             {error && <div className="rp-error">{error}</div>}
 
-            {/* ── Three-column layout (same grid as game.html) ─────── */}
+            {view === 'stats' && archive ? (
+                <StatsPanel
+                    archive={archive}
+                    policyColor={policyColor}
+                    onWatchReplay={() => { setView('replay'); setPlaying(false); setIdx(0); }}
+                />
+            ) : (
+            /* ── Three-column layout (same grid as game.html) ─────── */
             <div className="layout">
 
                 {/* LEFT — playback controls + current state + bank */}
@@ -399,6 +456,7 @@ export default function ReplayApp() {
                     </>) : null}
                 </aside>
             </div>
+            )}
         </div>
     );
 }

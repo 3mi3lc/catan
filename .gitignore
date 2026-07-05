@@ -1,9 +1,14 @@
 node_modules/
+dist/
+dist-mobile/
 .idea
 .venv/source .venv/bin/activate
 models/
 replays/
 data/
+.env
+.env.*
+!.env.example
 
 packages/training/__pycache__/
 **/__pycache__/

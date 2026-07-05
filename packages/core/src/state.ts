@@ -44,13 +44,20 @@ export type Phase =
     | 'main'            // build, trade, play dev cards, then end turn
     | 'gameOver';
 
-// A single outstanding player-to-player trade offer.
-export interface PendingTrade {
-  id: string;
-  from: PlayerId;
-  to: PlayerId | 'all';
-  give: ResourceBundle;
-  want: ResourceBundle;
+// An in-progress player-to-player trade negotiation, initiated by the active
+// player broadcasting an offer to all opponents.
+export type TradeReply = 'pending' | 'accept' | 'reject' | 'counter';
+export interface Negotiation {
+  proposer: PlayerId;                  // the active player who broadcast
+  give: ResourceBundle;                // what the proposer offers
+  want: ResourceBundle;                // what the proposer requests in return
+  // Each opponent's reply to the broadcast.
+  responses: Record<PlayerId, TradeReply>;
+  // A counterer's alternative terms (from the counterer's perspective: they
+  // give `give` and want `want`). Present only where responses[p] === 'counter'.
+  counters: Record<PlayerId, { give: ResourceBundle; want: ResourceBundle }>;
+  // 'responding' = opponents are replying; 'arbitrating' = proposer is choosing.
+  stage: 'responding' | 'arbitrating';
 }
 
 export interface GameState {
@@ -86,8 +93,17 @@ export interface GameState {
   devCardPlayedThisTurn: boolean;
   // After a 7, how many cards each over-the-limit player still owes.
   pendingDiscards: Record<PlayerId, number>;
-  // The current open trade offer, if any.
-  pendingTrade: PendingTrade | null;
+  // The active trade negotiation (broadcast offer + replies), if any.
+  negotiation: Negotiation | null;
+  // An offer being composed card-by-card — either the proposer's initial offer
+  // or an opponent's counter. `by` is whoever is currently composing.
+  draftOffer: { by: PlayerId; give: ResourceBundle; want: ResourceBundle } | null;
+  // Player-to-player offers broadcast so far this turn (bounds the cap).
+  tradesThisTurn: number;
+  // How many player-to-player offers may be broadcast in a single turn. Search
+  // and self-play keep this low (each offer adds many decision steps); an
+  // interactive game between humans can set it much higher.
+  maxOffersPerTurn: number;
 }
 
 export const VICTORY_POINTS_TO_WIN = 10;

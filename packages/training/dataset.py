@@ -2,14 +2,15 @@
 dataset.py — reads the binary shard files produced by collect.ts.
 
 Shard format (little-endian):
-    bytes  0- 3  uint32  magic = 0x4E415443
+    bytes  0- 3  uint32  magic = 0x34415443  ('CTA4')
     bytes  4- 7  uint32  num_samples
-    bytes  8-11  uint32  obs_size  (1328)
-    bytes 12-15  uint32  act_size  (300)
+    bytes  8-11  uint32  obs_size  (1659)
+    bytes 12-15  uint32  act_size  (396)
     then three contiguous blocks:
       float32[num_samples × obs_size]  observations
       uint16[num_samples]              action indices
-      uint8[num_samples]               outcomes  (1 = winner, 0 = loser)
+      uint8[num_samples]               outcomes: seat-relative winner offset
+                                       (0 = acting seat won) — a class label
 """
 
 from __future__ import annotations
@@ -22,9 +23,9 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, ConcatDataset
 
-OBS_SIZE = 1328
-ACT_SIZE = 300
-MAGIC    = 0x4E415443
+OBS_SIZE = 1659
+ACT_SIZE = 396
+MAGIC    = 0x34415443   # 'CTA4' — 4-seat + trade shards
 
 
 def read_shard(path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -47,7 +48,7 @@ def read_shard(path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
 
     obs     = payload[:e_obs].view("<f4").reshape(n, obs_size).copy()
     actions = payload[e_obs:e_act].view("<u2").astype(np.int64).copy()
-    outcomes = payload[e_act:e_out].astype(np.float32).copy()
+    outcomes = payload[e_act:e_out].astype(np.int64).copy()   # seat-relative winner class
 
     return obs, actions, outcomes
 
@@ -65,7 +66,7 @@ class ShardDataset(Dataset):
         return (
             torch.tensor(self.obs[idx],      dtype=torch.float32),
             torch.tensor(self.actions[idx],  dtype=torch.long),
-            torch.tensor(self.outcomes[idx], dtype=torch.float32),
+            torch.tensor(self.outcomes[idx], dtype=torch.long),   # winner class for CE
         )
 
 

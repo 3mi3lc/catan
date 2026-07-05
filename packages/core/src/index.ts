@@ -6,3 +6,6 @@ export * from './engine';
 export * from './board-generator';
 export * from './rules';
 export * from './setup';
+export * from './protocol';
+export * from './replay';
+export * from './stats';
